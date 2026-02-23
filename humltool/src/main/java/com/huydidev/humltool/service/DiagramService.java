@@ -7,4 +7,5 @@ public interface DiagramService {
     DiagramModel saveDiagram(DiagramModel model);
     List<DiagramModel> getAllDiagrams();
     DiagramModel getDiagramById(String id);
+    void deleteDiagram(String id);
 }

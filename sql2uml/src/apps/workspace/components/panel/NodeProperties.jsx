@@ -1,7 +1,7 @@
 // src/apps/user/components/NodeProperties.jsx
+// FIX: tableName được update khi label thay đổi, sync đúng với CodeMirror
 
-import { useState } from 'react';
-// import { THEME } from '../../../shared/constants/theme';
+import { useState, useCallback, useRef } from 'react';
 import { THEME } from '../../../../shared/constants/theme';
 
 function EditableList({ items, accentColor, onUpdate, onDelete, onAdd, addLabel }) {
@@ -35,14 +35,54 @@ export default function NodeProperties({ node, onClose, onUpdate }) {
   const [attributes, setAttributes] = useState(node.data.attributes || []);
   const [methods, setMethods]       = useState(node.data.methods || []);
 
-  const push = (l, a, m) => onUpdate(node.id, { label: l, attributes: a, methods: m });
+  // Giữ ref để luôn có giá trị mới nhất khi blur
+  const labelRef      = useRef(label);
+  const attrsRef      = useRef(attributes);
+  const methodsRef    = useRef(methods);
 
-  const updateAttr   = (i, v) => { const a = attributes.map((x,j) => j===i?v:x); setAttributes(a); push(label,a,methods); };
-  const deleteAttr   = (i)    => { const a = attributes.filter((_,j) => j!==i);  setAttributes(a); push(label,a,methods); };
-  const addAttr      = ()     => { const a = [...attributes,'- newField: string']; setAttributes(a); push(label,a,methods); };
-  const updateMethod = (i, v) => { const m = methods.map((x,j) => j===i?v:x); setMethods(m); push(label,attributes,m); };
-  const deleteMethod = (i)    => { const m = methods.filter((_,j) => j!==i);  setMethods(m); push(label,attributes,m); };
-  const addMethod    = ()     => { const m = [...methods,'+ newMethod(): void']; setMethods(m); push(label,attributes,m); };
+  labelRef.current   = label;
+  attrsRef.current   = attributes;
+  methodsRef.current = methods;
+
+  // ── push: build đủ cả tableName khi label thay đổi ──────────────
+  const push = useCallback((l, a, m) => {
+    onUpdate(node.id, {
+      label:      l,
+      attributes: a,
+      methods:    m,
+      // KEY FIX: luôn truyền tableName mới theo label
+      tableName:  l.toLowerCase().replace(/[^a-z0-9]/g, '_'),
+    });
+  }, [node.id, onUpdate]);
+
+  // ── Label: chỉ cập nhật local state khi gõ, push khi blur/Enter ─
+  const handleLabelChange = (e) => {
+    setLabel(e.target.value.toUpperCase());
+  };
+
+  const commitLabel = useCallback(() => {
+    push(labelRef.current, attrsRef.current, methodsRef.current);
+  }, [push]);
+
+  const handleLabelKeyDown = (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      commitLabel();
+      e.target.blur();
+    }
+    if (e.key === 'Escape') {
+      e.target.blur();
+    }
+  };
+
+  // ── Attributes: push ngay khi sửa (các field nhỏ dùng blur cũng ok) ─
+  const updateAttr   = (i, v) => { const a = attributes.map((x,j) => j===i?v:x); setAttributes(a); push(label, a, methods); };
+  const deleteAttr   = (i)    => { const a = attributes.filter((_,j) => j!==i);  setAttributes(a); push(label, a, methods); };
+  const addAttr      = ()     => { const a = [...attributes,'- newField: string']; setAttributes(a); push(label, a, methods); };
+
+  const updateMethod = (i, v) => { const m = methods.map((x,j) => j===i?v:x); setMethods(m); push(label, attributes, m); };
+  const deleteMethod = (i)    => { const m = methods.filter((_,j) => j!==i);  setMethods(m); push(label, attributes, m); };
+  const addMethod    = ()     => { const m = [...methods,'+ newMethod(): void']; setMethods(m); push(label, attributes, m); };
 
   return (
     <div className="flex flex-col gap-4 p-3">
@@ -63,9 +103,15 @@ export default function NodeProperties({ node, onClose, onUpdate }) {
         <label className={THEME.label}>Class Name</label>
         <input
           value={label}
-          onChange={(e) => { const v = e.target.value.toUpperCase(); setLabel(v); push(v, attributes, methods); }}
+          onChange={handleLabelChange}
+          onBlur={commitLabel}
+          onKeyDown={handleLabelKeyDown}
           className={`${THEME.input} px-3 py-2 text-sm font-bold text-white`}
+          placeholder="TABLE_NAME"
         />
+        <p className={`text-[9px] ${THEME.textGhost}`}>
+          Nhấn Enter hoặc click ra ngoài để cập nhật SQL
+        </p>
       </div>
 
       {/* Attributes */}

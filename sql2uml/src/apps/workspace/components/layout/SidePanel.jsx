@@ -21,6 +21,7 @@ export default function SidePanel({
   nodes, edges,
   selectedNode, onCloseNode, onNodeUpdate,
   onSyncToCanvas,
+  sqlPanelRef,
 }) {
   const [openTableId, setOpenTableId] = useState(null);
   const panelRef = useRef(null);
@@ -36,7 +37,6 @@ export default function SidePanel({
     >
       <HorizontalResizeHandle onMouseDown={onHMouseDown} />
 
-      {/* Top: Tables / NodeProperties */}
       <div className="flex flex-col overflow-hidden" style={{ height: `${topPct}%` }}>
         {!selectedNode ? (
           <>
@@ -70,11 +70,13 @@ export default function SidePanel({
 
       <VerticalResizeHandle onMouseDown={onVMouseDown} />
 
-      {/* Bottom: SQL Editor */}
       <div className="flex flex-col overflow-hidden flex-1">
         <SectionHeader icon="⚡" label="SQL Editor" />
         <div className="flex-1 overflow-hidden">
-          <SQLParserPanel onSyncToCanvas={onSyncToCanvas} />
+          <SQLParserPanel
+            ref={sqlPanelRef}
+            onSyncToCanvas={onSyncToCanvas}
+          />
         </div>
       </div>
     </div>

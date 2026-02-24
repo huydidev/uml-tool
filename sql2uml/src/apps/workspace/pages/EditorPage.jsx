@@ -1,6 +1,6 @@
 // src/apps/workspace/pages/EditorPage.jsx
 
-import { useState, useCallback, useRef, useEffect } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import { ReactFlowProvider, useReactFlow } from 'reactflow';
 import { THEME } from '../../../shared/constants/theme';
 import EditorHeader     from '../components/layout/EditorHeader';
@@ -8,48 +8,32 @@ import EditorCanvas     from '../components/canvas/EditorCanvas';
 import SidePanel        from '../components/layout/SidePanel';
 import SaveDiagramModal from '../components/modals/SaveDiagramModal';
 import ShareModal       from '../components/modals/ShareModal';
+import { nodeToSQL, genTableId } from '../../../shared/utils/Sqlparser';
 
-const STORAGE_KEY = 'uml_diagram';
+const STORAGE_KEY      = 'uml_diagram';
+const POSITIONS_KEY    = 'uml_positions';   // lưu riêng position để không bị mất khi SQL đổi
 
-// Tự động sắp xếp node mới theo grid nếu chưa có position
-function autoLayout(parsedNodes, existingNodes) {
-  const COLS = 3;
-  const GAP_X = 280;
-  const GAP_Y = 260;
-  const START_X = 80;
-  const START_Y = 80;
-
-  return parsedNodes.map((parsed, i) => {
-    // Giữ nguyên position nếu node đã tồn tại trên canvas
-    const existing = existingNodes.find(n => n.data.label === parsed.data.label);
-    if (existing) {
-      return {
-        ...parsed,
-        id:       existing.id,
-        position: existing.position,
-        type:     'umlClass',
-      };
-    }
-    // Node mới → đặt theo grid
-    const col = i % COLS;
-    const row = Math.floor(i / COLS);
-    return {
-      ...parsed,
-      type: 'umlClass',
-      position: {
-        x: START_X + col * GAP_X,
-        y: START_Y + row * GAP_Y,
-      },
-    };
-  });
-}
-
+// ── localStorage helpers ──────────────────────────────────────────────
 function loadSaved() {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (raw) return JSON.parse(raw);
   } catch (_) {}
   return null;
+}
+
+function loadPositions() {
+  try {
+    const raw = localStorage.getItem(POSITIONS_KEY);
+    if (raw) return JSON.parse(raw);
+  } catch (_) {}
+  return {};
+}
+
+function savePositions(posMap) {
+  try {
+    localStorage.setItem(POSITIONS_KEY, JSON.stringify(posMap));
+  } catch (_) {}
 }
 
 function EditorInner() {
@@ -66,10 +50,61 @@ function EditorInner() {
   const [viewMode, setViewMode]                 = useState('class');
   const [saveStatus, setSaveStatus]             = useState('');
 
-  const nodesRef = useRef(nodes);
-  const edgesRef = useRef(edges);
+  const nodesRef    = useRef(nodes);
+  const edgesRef    = useRef(edges);
+  const sqlPanelRef = useRef(null);
+
+  // Position cache: { [tableId]: {x, y} } — persist to localStorage
+  const positionCacheRef = useRef(loadPositions());
+
   useEffect(() => { nodesRef.current = nodes; }, [nodes]);
   useEffect(() => { edgesRef.current = edges; }, [edges]);
+
+  const handleNodeUpdateRef = useRef(null);
+
+  // ── handleNodeUpdate ─────────────────────────────────────────────
+  const handleNodeUpdate = useCallback((nodeId, newData) => {
+    setNodes(nds => nds.map(n => {
+      if (n.id !== nodeId) return n;
+      const newLabel     = newData.label     ?? n.data.label;
+      const newTableName = newData.tableName
+        ?? (newData.label
+            ? newData.label.toLowerCase().replace(/[^a-z0-9]/g, '_')
+            : n.data.tableName);
+      const updated = {
+        ...n,
+        data: {
+          ...n.data, ...newData,
+          tableId:   n.data.tableId || n.id,
+          tableName: newTableName,
+          label:     newLabel,
+          onUpdate:  handleNodeUpdateRef.current,
+        },
+      };
+      sqlPanelRef.current?.updateNode(updated);
+      return updated;
+    }));
+
+    setSelectedNode(prev => {
+      if (!prev || prev.id !== nodeId) return prev;
+      const newLabel     = newData.label     ?? prev.data.label;
+      const newTableName = newData.tableName
+        ?? (newData.label
+            ? newData.label.toLowerCase().replace(/[^a-z0-9]/g, '_')
+            : prev.data.tableName);
+      return {
+        ...prev,
+        data: { ...prev.data, ...newData, tableId: prev.data.tableId || prev.id, tableName: newTableName, label: newLabel },
+      };
+    });
+  }, []);
+
+  handleNodeUpdateRef.current = handleNodeUpdate;
+
+  const nodesWithCallback = nodes.map(n => ({
+    ...n,
+    data: { ...n.data, onUpdate: handleNodeUpdateRef.current },
+  }));
 
   const handleViewModeChange = useCallback((mode) => {
     setViewMode(mode);
@@ -79,64 +114,117 @@ function EditorInner() {
   const handleNodeClick = useCallback((_, node) => setSelectedNode(node), []);
   const handlePaneClick = useCallback(() => setSelectedNode(null), []);
 
-  // Canvas vẫn cho kéo di chuyển node, resize — chỉ không sync data ngược lại SQL
-  const handleNodeUpdate = useCallback((nodeId, newData) => {
-    setNodes(nds => nds.map(n =>
-      n.id === nodeId ? { ...n, data: { ...n.data, ...newData } } : n
-    ));
-    setSelectedNode(prev =>
-      prev?.id === nodeId ? { ...prev, data: { ...prev.data, ...newData } } : prev
-    );
-  }, []);
+  // ── Add node từ toolbox ──────────────────────────────────────────
+  // KEY FIX: dùng genTableId() (tbl_xxx) thay vì node-timestamp
+  // để @id trong SQL và node.id luôn khớp nhau
+  const handleAddNode = useCallback((newNode) => {
+    const tableId   = genTableId();               // ← luôn là tbl_xxx
+    const tableName = newNode.data.label?.toLowerCase().replace(/[^a-z0-9]/g, '_') ?? 'new_table';
 
-  // ── SQL → Canvas (source of truth) ──────────────────────────────
-  // Gọi mỗi khi SQL thay đổi, replace hoàn toàn nodes/edges
-  const handleSyncToCanvas = useCallback((parsedNodes, parsedEdges) => {
-    if (parsedNodes.length === 0) {
-      setNodes([]);
-      setEdges([]);
-      setSelectedNode(null);
-      return;
+    const node = {
+      ...newNode,
+      id: tableId,                                // ← override id = tableId
+      data: {
+        ...newNode.data,
+        viewMode,
+        tableId,
+        tableName,
+      },
+    };
+
+    // Lưu position ban đầu vào cache
+    positionCacheRef.current[tableId] = newNode.position;
+    savePositions(positionCacheRef.current);
+
+    setNodes(nds => [...nds, node]);
+    sqlPanelRef.current?.appendBlock(nodeToSQL(node));
+  }, [viewMode]);
+
+  // ── Delete node ──────────────────────────────────────────────────
+  const handleDeleteNode = useCallback((nodeId) => {
+    const node = nodesRef.current.find(n => n.id === nodeId);
+    if (node) {
+      const tableId = node.data.tableId || node.id;
+      sqlPanelRef.current?.removeNode(tableId);
+      delete positionCacheRef.current[tableId];
+      savePositions(positionCacheRef.current);
     }
 
-    // Giữ position của node đã có, auto layout node mới
-    const laidOut = autoLayout(parsedNodes, nodesRef.current).map(n => ({
+    const relatedEdges = edgesRef.current.filter(
+      e => e.source === nodeId || e.target === nodeId
+    );
+    for (const e of relatedEdges) {
+      sqlPanelRef.current?.removeRelation(e, nodesRef.current);
+    }
+
+    setNodes(nds => nds.filter(n => n.id !== nodeId));
+    setEdges(eds => eds.filter(e => e.source !== nodeId && e.target !== nodeId));
+    setSelectedNode(prev => prev?.id === nodeId ? null : prev);
+  }, []);
+
+  // ── Node drag stop → persist position ───────────────────────────
+  const handleNodeDragStop = useCallback((nodeId, position) => {
+    positionCacheRef.current[nodeId] = position;
+    savePositions(positionCacheRef.current);
+    sqlPanelRef.current?.updateNodePosition(nodeId, position);
+  }, []);
+
+  // ── Edge connect → upsert @relation ─────────────────────────────
+  const handleEdgeConnect = useCallback((newEdge) => {
+    setEdges(eds => {
+      const updated = [...eds, newEdge];
+      edgesRef.current = updated;
+      setTimeout(() => {
+        sqlPanelRef.current?.upsertRelation(newEdge, nodesRef.current);
+      }, 0);
+      return updated;
+    });
+  }, []);
+
+  // ── Edges delete → remove @relation ─────────────────────────────
+  const handleEdgesDelete = useCallback((deletedEdges) => {
+    for (const edge of deletedEdges) {
+      sqlPanelRef.current?.removeRelation(edge, nodesRef.current);
+    }
+    setEdges(eds => eds.filter(e => !deletedEdges.find(d => d.id === e.id)));
+  }, []);
+
+  // ── SQL → Canvas (từ editor gõ tay) ─────────────────────────────
+  // SQLParserPanel tự quản lý positionCache của nó (in-memory).
+  // EditorPage chỉ nhận nodes đã có position đúng và set vào state.
+  const handleSyncToCanvas = useCallback((parsedNodes, parsedEdges) => {
+    if (parsedNodes.length === 0) {
+      setNodes([]); setEdges([]); setSelectedNode(null);
+      return;
+    }
+    // Merge với positionCache của EditorPage (ưu tiên SQLParserPanel đã tính)
+    const withMode = parsedNodes.map(n => ({
       ...n,
       data: { ...n.data, viewMode },
+      // Nếu SQLParserPanel chưa có position cho node này, dùng cache của EditorPage
+      position: n.position ?? positionCacheRef.current[n.id] ?? n.position,
     }));
-
-    // Map edge: parsedNode id → real id
-    const idMap = {};
-    parsedNodes.forEach((pn, i) => { idMap[pn.id] = laidOut[i].id; });
-
-    const mappedEdges = (parsedEdges || []).map(e => ({
-      ...e,
-      id:     `edge-${e.source}-${e.target}`,
-      source: idMap[e.source] ?? e.source,
-      target: idMap[e.target] ?? e.target,
-      type:   selectedEdgeType,
-    }));
-
-    setNodes(laidOut);
-    setEdges(mappedEdges);
-    setSelectedNode(null);
-  }, [viewMode, selectedEdgeType]);
+    const idSet = new Set(withMode.map(n => n.id));
+    setNodes(withMode);
+    setEdges((parsedEdges || []).filter(e => idSet.has(e.source) && idSet.has(e.target)));
+  }, [viewMode]);
 
   // ── Save ─────────────────────────────────────────────────────────
   const doSave = useCallback((title) => {
     try {
+      const nodesToSave = nodesRef.current.map(n => {
+        const { onUpdate, ...dataRest } = n.data;
+        return { ...n, data: dataRest };
+      });
       localStorage.setItem(STORAGE_KEY, JSON.stringify({
-        title,
-        nodes: nodesRef.current,
-        edges: edgesRef.current,
+        title, nodes: nodesToSave, edges: edgesRef.current,
       }));
+      // Cũng persist positions
+      savePositions(positionCacheRef.current);
       setDiagramTitle(title);
       setSaveStatus('saved');
-    } catch (_) {
-      setSaveStatus('error');
-    } finally {
-      setTimeout(() => setSaveStatus(''), 2000);
-    }
+    } catch (_) { setSaveStatus('error'); }
+    setTimeout(() => setSaveStatus(''), 2000);
   }, []);
 
   const handleSaveClick = useCallback(() => {
@@ -160,7 +248,6 @@ function EditorInner() {
         saveStatusLabel={saveStatusLabel}
         isShared={false}
       />
-
       <div className="flex flex-1 overflow-hidden">
         <SidePanel
           nodes={nodes}
@@ -169,10 +256,10 @@ function EditorInner() {
           onCloseNode={() => setSelectedNode(null)}
           onNodeUpdate={handleNodeUpdate}
           onSyncToCanvas={handleSyncToCanvas}
+          sqlPanelRef={sqlPanelRef}
         />
-
         <EditorCanvas
-          nodes={nodes}
+          nodes={nodesWithCallback}
           edges={edges}
           setNodes={setNodes}
           setEdges={setEdges}
@@ -180,12 +267,15 @@ function EditorInner() {
           onEdgeTypeChange={setSelectedEdgeType}
           onNodeClick={handleNodeClick}
           onPaneClick={handlePaneClick}
-          onAddNode={null}       // toolbox kéo vào không dùng nữa
+          onAddNode={handleAddNode}
+          onDeleteNode={handleDeleteNode}
+          onEdgeConnect={handleEdgeConnect}
+          onEdgesDelete={handleEdgesDelete}
+          onNodeDragStop={handleNodeDragStop}
           viewMode={viewMode}
           onViewModeChange={handleViewModeChange}
         />
       </div>
-
       <SaveDiagramModal
         isOpen={saveModalOpen}
         onClose={() => setSaveModalOpen(false)}
@@ -202,9 +292,5 @@ function EditorInner() {
 }
 
 export default function EditorPage() {
-  return (
-    <ReactFlowProvider>
-      <EditorInner />
-    </ReactFlowProvider>
-  );
+  return <ReactFlowProvider><EditorInner /></ReactFlowProvider>;
 }

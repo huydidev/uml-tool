@@ -1,23 +1,19 @@
 // src/apps/workspace/components/canvas/UMLClassNode.jsx
+// FIX: gọi data.onUpdate(id, newData) sau khi edit xong → EditorPage sync SQL
 
 import { Handle, Position, useReactFlow, useStore } from 'reactflow';
 import { NodeResizer } from '@reactflow/node-resizer';
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useCallback } from 'react';
 import { THEME } from '../../../../shared/constants/theme';
 
-// Tính handle position tốt nhất dựa vào vị trí tương đối giữa 2 node
 function getBestHandlePosition(sourceNode, targetNode) {
   if (!sourceNode || !targetNode) return null;
-
   const sx = sourceNode.position.x + (sourceNode.width ?? 180) / 2;
   const sy = sourceNode.position.y + (sourceNode.height ?? 120) / 2;
   const tx = targetNode.position.x + (targetNode.width ?? 180) / 2;
   const ty = targetNode.position.y + (targetNode.height ?? 120) / 2;
-
   const dx = tx - sx;
   const dy = ty - sy;
-
-  // Nếu chênh lệch ngang > dọc → nối cạnh trái/phải, ngược lại nối cạnh trên/dưới
   if (Math.abs(dx) >= Math.abs(dy)) {
     return dx > 0 ? Position.Right : Position.Left;
   } else {
@@ -25,19 +21,16 @@ function getBestHandlePosition(sourceNode, targetNode) {
   }
 }
 
-// Hook lấy danh sách edges liên quan đến node này
 function useNodeConnections(nodeId) {
   return useStore((s) => s.edges.filter(
     (e) => e.source === nodeId || e.target === nodeId
   ));
 }
 
-// Handle dots — luôn render nhưng opacity 0/1
 function Handles({ nodeId, visible }) {
   const edges = useNodeConnections(nodeId);
   const nodes = useStore((s) => s.nodeInternals);
 
-  // Tính các position đang được dùng bởi edges hiện tại
   const usedPositions = useMemo(() => {
     const positions = new Set();
     edges.forEach((edge) => {
@@ -46,8 +39,6 @@ function Handles({ nodeId, visible }) {
       const selfNode = nodes.get(nodeId);
       const otherNode = nodes.get(otherNodeId);
       if (!selfNode || !otherNode) return;
-
-      // Tính position của self relative to other
       const pos = getBestHandlePosition(
         isSource ? selfNode : otherNode,
         isSource ? otherNode : selfNode
@@ -57,7 +48,7 @@ function Handles({ nodeId, visible }) {
     return positions;
   }, [edges, nodes, nodeId]);
 
-  const dotStyle = (position) => ({
+  const dotStyle = () => ({
     width: 10,
     height: 10,
     background: THEME.colors.PRIMARY,
@@ -70,10 +61,10 @@ function Handles({ nodeId, visible }) {
 
   return (
     <>
-      <Handle type="source" position={Position.Top}    id="top"    style={dotStyle(Position.Top)} />
-      <Handle type="source" position={Position.Bottom} id="bottom" style={dotStyle(Position.Bottom)} />
-      <Handle type="source" position={Position.Left}   id="left"   style={dotStyle(Position.Left)} />
-      <Handle type="source" position={Position.Right}  id="right"  style={dotStyle(Position.Right)} />
+      <Handle type="source" position={Position.Top}    id="top"    style={dotStyle()} />
+      <Handle type="source" position={Position.Bottom} id="bottom" style={dotStyle()} />
+      <Handle type="source" position={Position.Left}   id="left"   style={dotStyle()} />
+      <Handle type="source" position={Position.Right}  id="right"  style={dotStyle()} />
     </>
   );
 }
@@ -82,13 +73,27 @@ function Handles({ nodeId, visible }) {
 function ERDView({ id, data, selected }) {
   const { setNodes } = useReactFlow();
   const [isEditingName, setIsEditingName] = useState(false);
-  const [hovered, setHovered] = useState(false);
+  const [draftLabel, setDraftLabel]       = useState(data.label || '');
+  const [hovered, setHovered]             = useState(false);
 
-  const handleLabelChange = (value) => {
+  // Commit label lên cả ReactFlow state VÀ EditorPage (để sync SQL)
+  const commitLabel = useCallback((value) => {
+    const newLabel = value.trim().toUpperCase() || data.label;
+    setIsEditingName(false);
+
+    // 1. Cập nhật ReactFlow node state
     setNodes((nds) => nds.map((n) =>
-      n.id === id ? { ...n, data: { ...n.data, label: value } } : n
+      n.id === id ? { ...n, data: { ...n.data, label: newLabel } } : n
     ));
-  };
+
+    // 2. Gọi onUpdate để EditorPage sync SQL
+    if (typeof data.onUpdate === 'function') {
+      data.onUpdate(id, {
+        label:     newLabel,
+        tableName: newLabel.toLowerCase().replace(/[^a-z0-9]/g, '_'),
+      });
+    }
+  }, [id, data, setNodes]);
 
   return (
     <div
@@ -104,16 +109,22 @@ function ERDView({ id, data, selected }) {
 
       <div className={`px-3 py-2 ${THEME.bgPanel} flex justify-center items-center border-b-2 rounded-t-xl ${selected ? THEME.borderAccent : 'border-slate-300'}`}>
         {isEditingName ? (
-          <input autoFocus
+          <input
+            autoFocus
             className={`w-full text-center font-bold text-xs outline-none rounded px-1 ${THEME.bgInput} text-white`}
-            value={data.label}
-            onChange={(e) => handleLabelChange(e.target.value)}
-            onBlur={() => setIsEditingName(false)}
-            onKeyDown={(e) => e.key === 'Enter' && setIsEditingName(false)}
+            value={draftLabel}
+            onChange={(e) => setDraftLabel(e.target.value.toUpperCase())}
+            onBlur={() => commitLabel(draftLabel)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') { e.preventDefault(); commitLabel(draftLabel); }
+              if (e.key === 'Escape') { setDraftLabel(data.label); setIsEditingName(false); }
+            }}
           />
         ) : (
-          <div className="font-bold text-xs text-white uppercase tracking-wide cursor-text select-none"
-            onDoubleClick={() => setIsEditingName(true)}>
+          <div
+            className="font-bold text-xs text-white uppercase tracking-wide cursor-text select-none"
+            onDoubleClick={() => { setDraftLabel(data.label); setIsEditingName(true); }}
+          >
             {data.label || 'TABLE'}
           </div>
         )}
@@ -146,13 +157,33 @@ function ERDView({ id, data, selected }) {
 function ClassView({ id, data, selected }) {
   const { setNodes } = useReactFlow();
   const [isEditingName, setIsEditingName] = useState(false);
-  const [hovered, setHovered] = useState(false);
+  const [draftLabel, setDraftLabel]       = useState(data.label || '');
+  const [hovered, setHovered]             = useState(false);
 
-  const handleDataChange = (field, value) => {
-    setNodes((nds) => nds.map((node) =>
-      node.id === id ? { ...node, data: { ...node.data, [field]: value } } : node
+  // Commit bất kỳ field nào → cập nhật ReactFlow + gọi onUpdate để sync SQL
+  const commitField = useCallback((field, value) => {
+    // 1. Cập nhật ReactFlow
+    setNodes((nds) => nds.map((n) =>
+      n.id === id ? { ...n, data: { ...n.data, [field]: value } } : n
     ));
-  };
+
+    // 2. Build payload cho onUpdate
+    const payload = { [field]: value };
+    if (field === 'label') {
+      payload.tableName = value.toLowerCase().replace(/[^a-z0-9]/g, '_');
+    }
+
+    // 3. Gọi onUpdate → EditorPage → sqlPanelRef.updateNode()
+    if (typeof data.onUpdate === 'function') {
+      data.onUpdate(id, payload);
+    }
+  }, [id, data, setNodes]);
+
+  const commitLabel = useCallback((value) => {
+    const newLabel = value.trim().toUpperCase() || data.label;
+    setIsEditingName(false);
+    commitField('label', newLabel);
+  }, [commitField, data.label]);
 
   return (
     <div
@@ -166,38 +197,82 @@ function ClassView({ id, data, selected }) {
       />
       <Handles nodeId={id} visible={hovered || selected} />
 
+      {/* Class name header */}
       <div className={`p-2 border-b-2 flex justify-center items-center min-h-[35px] bg-slate-50 rounded-t-xl ${selected ? THEME.borderAccent : 'border-slate-300'}`}>
         {isEditingName ? (
-          <input autoFocus
+          <input
+            autoFocus
             className="w-full text-center font-bold uppercase text-sm outline-none bg-blue-50 rounded"
-            value={data.label}
-            onChange={(e) => handleDataChange('label', e.target.value)}
-            onBlur={() => setIsEditingName(false)}
-            onKeyDown={(e) => e.key === 'Enter' && setIsEditingName(false)}
+            value={draftLabel}
+            onChange={(e) => setDraftLabel(e.target.value.toUpperCase())}
+            onBlur={() => commitLabel(draftLabel)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') { e.preventDefault(); commitLabel(draftLabel); }
+              if (e.key === 'Escape') { setDraftLabel(data.label); setIsEditingName(false); }
+            }}
           />
         ) : (
-          <div className="font-bold uppercase text-sm cursor-text select-none text-slate-800"
-            onDoubleClick={() => setIsEditingName(true)}>
+          <div
+            className="font-bold uppercase text-sm cursor-text select-none text-slate-800"
+            onDoubleClick={() => { setDraftLabel(data.label); setIsEditingName(true); }}
+          >
             {data.label || 'NewClass'}
           </div>
         )}
       </div>
 
+      {/* Attributes textarea */}
       <div className="p-2 bg-white flex-1">
-        <textarea placeholder="- attributes"
+        <textarea
+          placeholder="- attributes"
           className="w-full text-[12px] italic border-none outline-none resize-none leading-relaxed overflow-hidden bg-transparent"
-          value={data.attributes?.join('\n')}
+          value={data.attributes?.join('\n') || ''}
           rows={Math.max(1, data.attributes?.length || 1)}
-          onChange={(e) => handleDataChange('attributes', e.target.value.split('\n'))}
+          onChange={(e) => {
+            // Cập nhật local ReactFlow state ngay để UI responsive
+            const newAttrs = e.target.value.split('\n');
+            setNodes((nds) => nds.map((n) =>
+              n.id === id ? { ...n, data: { ...n.data, attributes: newAttrs } } : n
+            ));
+          }}
+          onBlur={(e) => {
+            // Chỉ sync SQL khi blur (tránh flood updates)
+            commitField('attributes', e.target.value.split('\n'));
+          }}
+          onKeyDown={(e) => {
+            // Ctrl+Enter hoặc Shift+Enter để commit sớm
+            if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+              e.preventDefault();
+              commitField('attributes', e.target.value.split('\n'));
+              e.target.blur();
+            }
+          }}
         />
       </div>
 
+      {/* Methods textarea */}
       <div className={`p-2 border-t-2 bg-white flex-1 rounded-b-xl ${selected ? THEME.borderAccent : 'border-slate-300'}`}>
-        <textarea placeholder="+ methods()"
+        <textarea
+          placeholder="+ methods()"
           className="w-full text-[12px] border-none outline-none resize-none leading-relaxed overflow-hidden bg-transparent"
-          value={data.methods?.join('\n')}
+          value={data.methods?.join('\n') || ''}
           rows={Math.max(1, data.methods?.length || 1)}
-          onChange={(e) => handleDataChange('methods', e.target.value.split('\n'))}
+          onChange={(e) => {
+            const newMethods = e.target.value.split('\n');
+            setNodes((nds) => nds.map((n) =>
+              n.id === id ? { ...n, data: { ...n.data, methods: newMethods } } : n
+            ));
+          }}
+          onBlur={(e) => {
+            commitField('methods', e.target.value.split('\n'));
+          }}
+          onKeyDown={(e) => {
+            if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+              e.preventDefault();
+              commitField('methods', e.target.value.split('\n'));
+              e.target.blur();
+            }
+          }}
         />
       </div>
     </div>

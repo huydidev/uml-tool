@@ -1,10 +1,10 @@
 package com.huydidev.humltool.service;
 
-import com.huydidev.humltool.entity.DiagramVersionEntity;
+import com.huydidev.humltool.model.VersionModel;
 
 import java.util.List;
 
 public interface DiagramVersionService {
-    DiagramVersionEntity saveVersion(String diagramId, String label, String token);
-    List<DiagramVersionEntity> getHistory(String diagramId);
+    VersionModel saveVersion(String diagramId, String label, String token);
+    List<VersionModel> getHistory(String diagramId);
 }

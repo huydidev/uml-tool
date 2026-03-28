@@ -1,4 +1,4 @@
-package com.huydidev.humltool.dto;
+package com.huydidev.humltool.dto.request;
 
 import lombok.Data;
 

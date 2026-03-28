@@ -1,7 +1,7 @@
 package com.huydidev.humltool.controller;
 
-import com.huydidev.humltool.dto.LoginRequest;
-import com.huydidev.humltool.dto.RegisterRequest;
+import com.huydidev.humltool.dto.request.LoginRequest;
+import com.huydidev.humltool.dto.request.RegisterRequest;
 import com.huydidev.humltool.service.AuthService;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;

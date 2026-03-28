@@ -1,10 +1,10 @@
 package com.huydidev.humltool.service.impl;
 
 import com.huydidev.humltool.config.JwtUtils;
-import com.huydidev.humltool.dto.JwtResponse;
-import com.huydidev.humltool.dto.LoginRequest;
-import com.huydidev.humltool.dto.RegisterRequest;
-import com.huydidev.humltool.dto.UserResponse;
+import com.huydidev.humltool.dto.response.JwtResponse;
+import com.huydidev.humltool.dto.request.LoginRequest;
+import com.huydidev.humltool.dto.request.RegisterRequest;
+import com.huydidev.humltool.dto.response.UserResponse;
 import com.huydidev.humltool.entity.UserEntity;
 import com.huydidev.humltool.repository.UserRepository;
 import com.huydidev.humltool.service.AuthService;

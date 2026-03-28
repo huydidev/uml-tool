@@ -1,7 +1,8 @@
 package com.huydidev.humltool.controller;
 
 
-import com.huydidev.humltool.entity.DiagramVersionEntity;
+import com.huydidev.humltool.model.DiagramModel;
+import com.huydidev.humltool.model.VersionModel;
 import com.huydidev.humltool.service.DiagramVersionService;
 import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -30,7 +31,7 @@ public class DiagramVersionController {
         String token = headerAuth.substring(7);
 
         try{
-            DiagramVersionEntity savedVersion = versionService.saveVersion(diagramId, label, token);
+            VersionModel savedVersion = versionService.saveVersion(diagramId, label, token);
             return ResponseEntity.ok(savedVersion);
         }catch (Exception e){
             return ResponseEntity.badRequest().body("Lỗi lưu version: " + e.getMessage());
@@ -38,7 +39,7 @@ public class DiagramVersionController {
     }
 
     @GetMapping("/history/{diagramId}")
-    public ResponseEntity<List<DiagramVersionEntity>> getHistory(@PathVariable String diagramId){
+    public ResponseEntity<List<VersionModel>> getHistory(@PathVariable String diagramId){
         return ResponseEntity.ok(versionService.getHistory(diagramId));
 
     }

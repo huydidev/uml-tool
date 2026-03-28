@@ -1,4 +1,4 @@
-package com.huydidev.humltool.dto;
+package com.huydidev.humltool.dto.request;
 import jakarta.validation.constraints.Email;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Size;

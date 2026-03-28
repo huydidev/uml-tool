@@ -31,4 +31,24 @@ public class JwtUtils {
                 .signWith(key, SignatureAlgorithm.HS512)
                 .compact();
     }
+    public boolean validateJwtToken(String authToken) {
+        try {
+            SecretKey key = Keys.hmacShaKeyFor(jwtSecret.getBytes(StandardCharsets.UTF_8));
+            Jwts.parserBuilder().setSigningKey(key).build().parseClaimsJws(authToken);
+            return true;
+        } catch (Exception e) {
+            // Log lỗi token sai
+        }
+        return false;
+    }
+
+    public String getUserNameFromJwtToken(String token) {
+        SecretKey key = Keys.hmacShaKeyFor(jwtSecret.getBytes(StandardCharsets.UTF_8));
+        return Jwts.parserBuilder()
+                .setSigningKey(key)
+                .build()
+                .parseClaimsJws(token)
+                .getBody()
+                .getSubject();
+    }
 }

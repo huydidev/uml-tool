@@ -4,7 +4,7 @@ import com.huydidev.humltool.model.DiagramModel;
 import java.util.List;
 
 public interface DiagramService {
-    DiagramModel saveDiagram(DiagramModel model);
+    DiagramModel saveDiagram(DiagramModel model, String token);
     List<DiagramModel> getAllDiagrams();
     DiagramModel getDiagramById(String id);
     void deleteDiagram(String id);

@@ -19,18 +19,24 @@ public class DiagramController {
     private DiagramService diagramService; // Inject Interface
 
     @PostMapping
-    public ResponseEntity<DiagramModel> create(@RequestBody @Valid DiagramModel model) {
+    public ResponseEntity<DiagramModel> create(
+            @RequestBody @Valid DiagramModel model,
+            @RequestHeader("Authorization") String authHeader) {
         model.setId(null); // Đảm bảo tạo mới
-        return ResponseEntity.status(HttpStatus.CREATED).body(diagramService.saveDiagram(model));
+        String token = authHeader.substring(7);
+        return ResponseEntity.status(HttpStatus.CREATED)
+                .body(diagramService.saveDiagram(model, token));
     }
 
     // FE gọi khi thoát editor (đã có id)
     @PutMapping("/{id}")
     public ResponseEntity<DiagramModel> update(
             @PathVariable String id,
-            @RequestBody @Valid DiagramModel model) {
+            @RequestBody @Valid DiagramModel model,
+            @RequestHeader("Authorization") String authHeader) {
         model.setId(id);
-        return ResponseEntity.ok(diagramService.saveDiagram(model));
+        String token = authHeader.substring(7);
+        return ResponseEntity.ok(diagramService.saveDiagram(model, token));
     }
 
     // Mở danh sách
@@ -51,4 +57,5 @@ public class DiagramController {
         diagramService.deleteDiagram(id);
         return ResponseEntity.noContent().build();
     }
+
 }

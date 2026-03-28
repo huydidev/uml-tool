@@ -1,5 +1,6 @@
 package com.huydidev.humltool.service.impl;
 
+import com.huydidev.humltool.config.JwtUtils;
 import com.huydidev.humltool.entity.DiagramEntity;
 import com.huydidev.humltool.exceptions.ResourceNotFoundException;
 import com.huydidev.humltool.model.DiagramModel;
@@ -16,32 +17,35 @@ import java.util.stream.Collectors;
 public class DiagramServiceImpl implements DiagramService {
 
     @Autowired
-    private DiagramRepository repository;
+    private JwtUtils jwtUtils;
+    @Autowired
+    private DiagramRepository diagramRepository;
 
     @Override
-    public DiagramModel saveDiagram(DiagramModel model) {
-        DiagramEntity entity = new DiagramEntity();
-
-        if (model.getId() == null || model.getId().isBlank()){
-            entity.setId(UUID.randomUUID().toString());
-            entity.setCreatedAt(LocalDateTime.now());
-        }else {
-            entity.setId(model.getId());
-            repository.findById(model.getId())
-                    .ifPresent(existing -> entity.setCreatedAt(existing.getCreatedAt()));
-        }
+    public DiagramModel saveDiagram(DiagramModel model, String token) {
+        DiagramEntity entity = (model.getId() != null)
+                ? diagramRepository.findById(model.getId()).orElse(new DiagramEntity())
+                : new DiagramEntity();
 
         entity.setTitle(model.getTitle());
-        entity.setAuthor(model.getAuthor());
-        entity.setContent(model.getContent());
+        entity.setDescription(model.getDescription());
+        entity.setNodes(model.getNodes());
+        entity.setEdges(model.getEdges());
+        entity.setOwnerId(jwtUtils.getUserNameFromJwtToken(token));
         entity.setUpdatedAt(LocalDateTime.now());
 
-        return mapToModel(repository.save(entity));
+        if (entity.getId() == null) {
+            entity.setShareToken(UUID.randomUUID().toString().substring(0, 8));
+        }
+
+        DiagramEntity savedEntity = diagramRepository.save(entity);
+        model.setId(savedEntity.getId());
+        return model;
     }
 
     @Override
     public List<DiagramModel> getAllDiagrams() {
-        return repository.findAll().stream()
+        return diagramRepository.findAll().stream()
                 .map(this::mapToModel)
                 .collect(Collectors.toList());
     }
@@ -50,20 +54,21 @@ public class DiagramServiceImpl implements DiagramService {
         DiagramModel model = new DiagramModel();
         model.setId(entity.getId());
         model.setTitle(entity.getTitle());
-        model.setAuthor(entity.getAuthor());
-        model.setContent(entity.getContent());
+        model.setNodes(entity.getNodes());
+        model.setEdges(entity.getEdges());
+        model.setDescription(entity.getDescription());
         return model;
     }
 
     @Override
     public DiagramModel getDiagramById(String id) {
-        return repository.findById(id)
+        return diagramRepository.findById(id)
                 .map(this::mapToModel)
                 .orElseThrow(() -> new ResourceNotFoundException("Không tìm thấy diagram: " + id));
     }
 
     @Override
     public void deleteDiagram(String id){
-        repository.deleteById(id);
+        diagramRepository.deleteById(id);
     }
 }

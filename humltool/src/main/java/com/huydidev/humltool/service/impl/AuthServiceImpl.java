@@ -55,9 +55,11 @@ public class AuthServiceImpl implements AuthService {
     }
 
     @Override
-    public void logout(String token){
-        long expiration = 864000000;
-
-        redisTemplate.opsForValue().set(token, "blacklisted", Duration.ofMillis(expiration));
+    public void logout(String token) {
+        long ttl = jwtUtils.getExpirationFromToken(token);
+        if (ttl > 0) {
+            redisTemplate.opsForValue().set(
+                    "blacklist:" + token, "revoked", Duration.ofMillis(ttl));
+        }
     }
 }

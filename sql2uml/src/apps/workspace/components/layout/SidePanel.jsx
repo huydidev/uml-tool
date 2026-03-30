@@ -1,33 +1,17 @@
 // src/apps/workspace/components/layout/SidePanel.jsx
 
-import { useState, useRef } from 'react';
-import { THEME } from '../../../../shared/constants/theme';
-import { useHorizontalResize, useVerticalResize } from '../../../../shared/hooks/useResizable';
-import { HorizontalResizeHandle, VerticalResizeHandle } from '../../../../shared/components/ResizeHandle';
-import TableRow       from '../panel/TableRow';
-import NodeProperties from '../panel/NodeProperties';
-import SQLParserPanel from '../panel/SQLParserPanel';
-
-function SectionHeader({ icon, label }) {
-  return (
-    <div className={`px-3 py-2.5 border-b ${THEME.border} shrink-0 flex items-center gap-2`}>
-      {icon && <span className={THEME.accentViolet}>{icon}</span>}
-      <p className={THEME.label}>{label}</p>
-    </div>
-  );
-}
+import { useRef } from 'react'
+import { THEME } from '../../../../shared/constants/theme'
+import { useHorizontalResize } from '../../../../shared/hooks/useResizable'
+import { HorizontalResizeHandle } from '../../../../shared/components/ResizeHandle'
+import SQLParserPanel from '../panel/SQLParserPanel'
 
 export default function SidePanel({
-  nodes, edges,
-  selectedNode, onCloseNode, onNodeUpdate,
   onSyncToCanvas,
   sqlPanelRef,
 }) {
-  const [openTableId, setOpenTableId] = useState(null);
-  const panelRef = useRef(null);
-
-  const { width, onMouseDown: onHMouseDown }  = useHorizontalResize();
-  const { topPct, onMouseDown: onVMouseDown } = useVerticalResize(panelRef);
+  const panelRef = useRef(null)
+  const { width, onMouseDown: onHMouseDown } = useHorizontalResize()
 
   return (
     <div
@@ -37,48 +21,35 @@ export default function SidePanel({
     >
       <HorizontalResizeHandle onMouseDown={onHMouseDown} />
 
-      <div className="flex flex-col overflow-hidden" style={{ height: `${topPct}%` }}>
-        {!selectedNode ? (
-          <>
-            <SectionHeader label={`Tables (${nodes.length})`} />
-            <div className="flex-1 overflow-y-auto">
-              {nodes.length === 0 && (
-                <p className={`text-[10px] ${THEME.textGhost} italic px-3 py-4`}>
-                  Gõ SQL bên dưới để tạo bảng
-                </p>
-              )}
-              {nodes.map(node => (
-                <TableRow
-                  key={node.id}
-                  node={node}
-                  isOpen={openTableId === node.id}
-                  onToggle={() => setOpenTableId(id => id === node.id ? null : node.id)}
-                />
-              ))}
-            </div>
-          </>
-        ) : (
-          <div className="flex-1 overflow-y-auto">
-            <NodeProperties
-              node={selectedNode}
-              onClose={onCloseNode}
-              onUpdate={onNodeUpdate}
-            />
-          </div>
-        )}
+      {/* Header — khớp với thiết kế */}
+      <div
+        className={`px-3 py-2.5 border-b ${THEME.border} shrink-0 flex items-center justify-between`}
+      >
+        <span
+          className="text-[10px] font-bold uppercase tracking-widest"
+          style={{ color: THEME.colors.MUTED }}
+        >
+          SQL Schema Definition
+        </span>
+        <svg
+          width="13" height="13" viewBox="0 0 24 24" fill="none"
+          stroke={THEME.colors.MUTED} strokeWidth="2"
+          strokeLinecap="round" strokeLinejoin="round"
+        >
+          <polyline points="15 3 21 3 21 9"/>
+          <polyline points="9 21 3 21 3 15"/>
+          <line x1="21" y1="3" x2="14" y2="10"/>
+          <line x1="3" y1="21" x2="10" y2="14"/>
+        </svg>
       </div>
 
-      <VerticalResizeHandle onMouseDown={onVMouseDown} />
-
-      <div className="flex flex-col overflow-hidden flex-1">
-        <SectionHeader icon="⚡" label="SQL Editor" />
-        <div className="flex-1 overflow-hidden">
-          <SQLParserPanel
-            ref={sqlPanelRef}
-            onSyncToCanvas={onSyncToCanvas}
-          />
-        </div>
+      {/* SQL Editor — full height */}
+      <div className="flex-1 overflow-hidden">
+        <SQLParserPanel
+          ref={sqlPanelRef}
+          onSyncToCanvas={onSyncToCanvas}
+        />
       </div>
     </div>
-  );
+  )
 }

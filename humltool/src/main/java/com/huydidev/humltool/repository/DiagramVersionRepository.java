@@ -9,4 +9,6 @@ import java.util.List;
 public interface DiagramVersionRepository extends MongoRepository<DiagramVersionEntity, String> {
     List<DiagramVersionEntity> findByDiagramIdOrderByVersionNumDesc(String diagramId);
     DiagramVersionEntity findFirstByDiagramIdOrderByVersionNumDesc(String diagramId);
+    long countByDiagramId(String diagramId);
+    DiagramVersionEntity findFirstByDiagramIdOrderByVersionNumAsc(String diagramId);
 }

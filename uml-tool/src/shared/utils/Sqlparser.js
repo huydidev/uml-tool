@@ -1,0 +1,303 @@
+/**
+ * SQL Parser — Hai chiều:
+ * 1. generateSQL(nodes, edges) → SQL string
+ * 2. parseSQLToNodes(sqlText)  → { nodes, edges, formattedSQL }
+ */
+
+// ── Map UML type → SQL type ─────────────────────────────────────────
+const UML_TO_SQL = {
+  int: 'INT', integer: 'INT', long: 'BIGINT',
+  string: 'VARCHAR(255)', str: 'VARCHAR(255)', text: 'TEXT',
+  boolean: 'BOOLEAN', bool: 'BOOLEAN',
+  float: 'FLOAT', double: 'DOUBLE',
+  date: 'DATE', datetime: 'DATETIME', timestamp: 'TIMESTAMP',
+  uuid: 'VARCHAR(36)', decimal: 'DECIMAL(10,2)',
+};
+
+// ── Map SQL type → UML type ─────────────────────────────────────────
+const SQL_TO_UML = {
+  'INT': 'int', 'INTEGER': 'int', 'BIGINT': 'long', 'SMALLINT': 'int',
+  'VARCHAR': 'string', 'CHAR': 'string', 'TEXT': 'text', 'LONGTEXT': 'text',
+  'BOOLEAN': 'boolean', 'BOOL': 'boolean', 'TINYINT(1)': 'boolean',
+  'FLOAT': 'float', 'DOUBLE': 'double', 'DECIMAL': 'decimal', 'NUMERIC': 'decimal',
+  'DATE': 'date', 'DATETIME': 'datetime', 'TIMESTAMP': 'timestamp',
+};
+
+function sqlTypeToUml(sqlType) {
+  const upper = sqlType.toUpperCase().trim();
+  // Exact match
+  if (SQL_TO_UML[upper]) return SQL_TO_UML[upper];
+  // Prefix match: VARCHAR(255) → VARCHAR
+  const base = upper.replace(/\(.*\)/, '').trim();
+  return SQL_TO_UML[base] || sqlType.toLowerCase();
+}
+
+// ── Parse attribute line từ UML ─────────────────────────────────────
+function parseUmlAttribute(line) {
+  const trimmed = line.trim();
+  if (!trimmed) return null;
+  const withoutModifier = trimmed.replace(/^[-+#~]\s*/, '');
+  const colonIdx = withoutModifier.indexOf(':');
+  let name, rawType;
+  if (colonIdx !== -1) {
+    name = withoutModifier.slice(0, colonIdx).trim();
+    rawType = withoutModifier.slice(colonIdx + 1).trim().toLowerCase();
+  } else {
+    name = withoutModifier.trim();
+    rawType = 'varchar';
+  }
+  name = name.replace(/[^a-zA-Z0-9_]/g, '_').toLowerCase();
+  const sqlType = UML_TO_SQL[rawType] || 'VARCHAR(255)';
+  return { name, sqlType, isPK: name === 'id' };
+}
+
+// ── Node → CREATE TABLE ─────────────────────────────────────────────
+function nodeToCreateTable(node) {
+  const tableName = node.data.label?.toLowerCase().replace(/[^a-zA-Z0-9]/g, '_') || 'unknown_table';
+  const attributes = (node.data.attributes || []).filter(a => a.trim());
+  const columns = [];
+  const hasId = attributes.some(a =>
+    a.trim().replace(/^[-+#~]\s*/, '').split(':')[0].trim().toLowerCase() === 'id'
+  );
+  if (!hasId) columns.push(`  id VARCHAR(36) PRIMARY KEY`);
+  for (const attr of attributes) {
+    const parsed = parseUmlAttribute(attr);
+    if (!parsed) continue;
+    columns.push(parsed.isPK
+      ? `  ${parsed.name} ${parsed.sqlType} PRIMARY KEY`
+      : `  ${parsed.name} ${parsed.sqlType}`
+    );
+  }
+  if (columns.length === 0) columns.push(`  id VARCHAR(36) PRIMARY KEY`);
+  return { tableName, nodeId: node.id, sql: `CREATE TABLE ${tableName} (\n${columns.join(',\n')}\n);` };
+}
+
+// ── Edges → ALTER TABLE FK ──────────────────────────────────────────
+function edgesToForeignKeys(edges, tableMap) {
+  const fkStatements = [];
+  for (const edge of edges) {
+    const sourceTable = tableMap[edge.source];
+    const targetTable = tableMap[edge.target];
+    if (!sourceTable || !targetTable) continue;
+    switch (edge.type || 'association') {
+      case 'association':
+        fkStatements.push(`ALTER TABLE ${sourceTable}\n  ADD COLUMN ${targetTable}_id VARCHAR(36),\n  ADD CONSTRAINT fk_${sourceTable}_${targetTable}\n    FOREIGN KEY (${targetTable}_id) REFERENCES ${targetTable}(id);`);
+        break;
+      case 'inheritance':
+        fkStatements.push(`ALTER TABLE ${sourceTable}\n  ADD COLUMN ${targetTable}_id VARCHAR(36),\n  ADD CONSTRAINT fk_${sourceTable}_inherits_${targetTable}\n    FOREIGN KEY (${targetTable}_id) REFERENCES ${targetTable}(id);`);
+        break;
+      case 'aggregation':
+        fkStatements.push(`ALTER TABLE ${sourceTable}\n  ADD COLUMN ${targetTable}_id VARCHAR(36),\n  ADD CONSTRAINT fk_${sourceTable}_agg_${targetTable}\n    FOREIGN KEY (${targetTable}_id) REFERENCES ${targetTable}(id) ON DELETE SET NULL;`);
+        break;
+      case 'composition':
+        fkStatements.push(`ALTER TABLE ${targetTable}\n  ADD COLUMN ${sourceTable}_id VARCHAR(36) NOT NULL,\n  ADD CONSTRAINT fk_${targetTable}_comp_${sourceTable}\n    FOREIGN KEY (${sourceTable}_id) REFERENCES ${sourceTable}(id) ON DELETE CASCADE;`);
+        break;
+    }
+  }
+  return fkStatements;
+}
+
+// ── generateSQL: nodes+edges → SQL string ──────────────────────────
+export function generateSQL(nodes, edges) {
+  if (!nodes || nodes.length === 0) return '-- Chưa có class nào trong diagram';
+  const tableResults = nodes.map(nodeToCreateTable);
+  const tableMap = {};
+  tableResults.forEach(t => { tableMap[t.nodeId] = t.tableName; });
+  const createStatements = tableResults.map(t => t.sql);
+  const fkStatements = edgesToForeignKeys(edges || [], tableMap);
+  const lines = [
+    '-- ================================================',
+    '-- Generated by UML Architect',
+    `-- Date: ${new Date().toISOString().slice(0, 10)}`,
+    `-- Tables: ${tableResults.length} | Relationships: ${fkStatements.length}`,
+    '-- ================================================',
+    '',
+    '-- CREATE TABLES',
+    ...createStatements.map(s => s + '\n'),
+  ];
+  if (fkStatements.length > 0) {
+    lines.push('-- RELATIONSHIPS (Foreign Keys)');
+    fkStatements.forEach(s => lines.push(s + '\n'));
+  }
+  return lines.join('\n');
+}
+
+// ── parseSQLToNodes: SQL string → { nodes, edges, formattedSQL } ────
+export function parseSQLToNodes(sqlText) {
+  const nodes = [];
+  const edges = [];
+  const tableColumnMap = {}; // tableName → [columnDef]
+  const fkRelations = [];    // { from, to, onDelete }
+
+  // Xóa comment --
+  const cleaned = sqlText
+    .replace(/--[^\n]*/g, '')
+    .replace(/\/\*[\s\S]*?\*\//g, '');
+
+  // Tách từng statement bằng dấu ;
+  const statements = cleaned.split(';').map(s => s.trim()).filter(Boolean);
+
+  for (const stmt of statements) {
+    const upper = stmt.toUpperCase();
+
+    // ── CREATE TABLE ─────────────────────────────────────────────
+    if (upper.startsWith('CREATE TABLE')) {
+      const tableMatch = stmt.match(/CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?[`"]?(\w+)[`"]?\s*\((.+)\)/is);
+      if (!tableMatch) continue;
+
+      const tableName = tableMatch[1];
+      const body = tableMatch[2];
+      const columnDefs = splitColumns(body);
+      const attributes = [];
+      const methods = [];
+
+      tableColumnMap[tableName] = columnDefs;
+
+      for (const col of columnDefs) {
+        const colTrim = col.trim();
+        if (!colTrim) continue;
+        const colUpper = colTrim.toUpperCase();
+
+        // Bỏ qua constraint lines
+        if (colUpper.startsWith('PRIMARY KEY') || colUpper.startsWith('UNIQUE') || colUpper.startsWith('INDEX')) continue;
+
+        // Parse FOREIGN KEY inline
+        if (colUpper.startsWith('FOREIGN KEY') || colUpper.startsWith('CONSTRAINT')) {
+          const fkMatch = colTrim.match(/FOREIGN\s+KEY\s*\((\w+)\)\s+REFERENCES\s+(\w+)\s*\((\w+)\)(\s+ON\s+DELETE\s+(\w+\s*\w*))?/i);
+          if (fkMatch) {
+            fkRelations.push({
+              from: tableName,
+              to: fkMatch[2],
+              onDelete: fkMatch[5]?.trim()?.toUpperCase() || null,
+            });
+          }
+          continue;
+        }
+
+        // Parse column: name type [constraints...]
+        const parts = colTrim.match(/^[`"]?(\w+)[`"]?\s+([A-Za-z]+(?:\(\d+(?:,\d+)?\))?)(.*)?$/);
+        if (!parts) continue;
+
+        const colName = parts[1];
+        const colType = parts[2];
+        const rest = (parts[3] || '').toUpperCase();
+        const isPK = rest.includes('PRIMARY KEY');
+        const isNotNull = rest.includes('NOT NULL');
+        const umlType = sqlTypeToUml(colType);
+        const modifier = isPK ? '+' : '-';
+        const nullable = isNotNull || isPK ? '' : '?';
+        attributes.push(`${modifier} ${colName}${nullable}: ${umlType}`);
+      }
+
+      nodes.push({
+        id: `node-${tableName}`,
+        type: 'umlClass',
+        position: autoPosition(nodes.length),
+        data: {
+          label: tableName.toUpperCase(),
+          attributes,
+          methods,
+        },
+      });
+    }
+
+    // ── ALTER TABLE ... ADD FOREIGN KEY ──────────────────────────
+    if (upper.includes('FOREIGN KEY')) {
+      const altMatch = stmt.match(/ALTER\s+TABLE\s+[`"]?(\w+)[`"]?/i);
+      const fkMatch = stmt.match(/FOREIGN\s+KEY\s*\((\w+)\)\s+REFERENCES\s+[`"]?(\w+)[`"]?\s*\((\w+)\)(\s+ON\s+DELETE\s+(\w+\s*\w*))?/i);
+      if (altMatch && fkMatch) {
+        fkRelations.push({
+          from: altMatch[1],
+          to: fkMatch[2],
+          onDelete: fkMatch[5]?.trim()?.toUpperCase() || null,
+        });
+      }
+    }
+  }
+
+  // ── Build edges từ FK relations ───────────────────────────────
+  for (const fk of fkRelations) {
+    const sourceNode = nodes.find(n => n.id === `node-${fk.from}`);
+    const targetNode = nodes.find(n => n.id === `node-${fk.to}`);
+    if (!sourceNode || !targetNode) continue;
+
+    let edgeType = 'association';
+    if (fk.onDelete === 'CASCADE') edgeType = 'composition';
+    else if (fk.onDelete === 'SET NULL') edgeType = 'aggregation';
+
+    edges.push({
+      id: `edge-${fk.from}-${fk.to}-${Date.now()}-${Math.random()}`,
+      source: sourceNode.id,
+      target: targetNode.id,
+      type: edgeType,
+      ...(edgeType === 'association' && {
+        markerEnd: { type: 'arrowclosed', width: 16, height: 16, color: '#1e293b' },
+      }),
+    });
+  }
+
+  // ── Format SQL đẹp ────────────────────────────────────────────
+  const formattedSQL = formatSQL(sqlText);
+
+  return { nodes, edges, formattedSQL };
+}
+
+// ── Tách columns trong body của CREATE TABLE (xử lý nested parens) ──
+function splitColumns(body) {
+  const cols = [];
+  let depth = 0;
+  let current = '';
+  for (const ch of body) {
+    if (ch === '(') { depth++; current += ch; }
+    else if (ch === ')') { depth--; current += ch; }
+    else if (ch === ',' && depth === 0) {
+      cols.push(current.trim());
+      current = '';
+    } else {
+      current += ch;
+    }
+  }
+  if (current.trim()) cols.push(current.trim());
+  return cols;
+}
+
+// ── Auto position nodes theo grid ────────────────────────────────────
+function autoPosition(index) {
+  const cols = 3;
+  const col = index % cols;
+  const row = Math.floor(index / cols);
+  return {
+    x: 80 + col * 320,
+    y: 80 + row * 280,
+  };
+}
+
+// ── Format SQL cho đẹp ───────────────────────────────────────────────
+function formatSQL(sql) {
+  const keywords = ['SELECT', 'FROM', 'WHERE', 'JOIN', 'LEFT JOIN', 'RIGHT JOIN',
+    'INNER JOIN', 'ON', 'GROUP BY', 'ORDER BY', 'HAVING', 'LIMIT',
+    'CREATE TABLE', 'ALTER TABLE', 'DROP TABLE', 'INSERT INTO',
+    'UPDATE', 'DELETE FROM', 'PRIMARY KEY', 'FOREIGN KEY', 'REFERENCES',
+    'NOT NULL', 'DEFAULT', 'UNIQUE', 'INDEX', 'ADD COLUMN', 'ADD CONSTRAINT',
+    'ON DELETE CASCADE', 'ON DELETE SET NULL', 'ON DELETE RESTRICT',
+  ];
+
+  let formatted = sql.trim();
+
+  // Uppercase keywords
+  for (const kw of keywords) {
+    const regex = new RegExp(`\\b${kw}\\b`, 'gi');
+    formatted = formatted.replace(regex, kw);
+  }
+
+  // Indent columns bên trong ()
+  formatted = formatted.replace(
+    /CREATE TABLE (\w+)\s*\(([^;]+)\)/gi,
+    (match, name, body) => {
+      const cols = splitColumns(body).map(c => `  ${c.trim()}`).join(',\n');
+      return `CREATE TABLE ${name} (\n${cols}\n)`;
+    }
+  );
+
+  return formatted;
+}

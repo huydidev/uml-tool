@@ -68,6 +68,13 @@ public class DiagramServiceImpl implements DiagramService {
     }
 
     @Override
+    public List<DiagramModel> getMyDiagrams(String token) {
+        String ownerId = jwtUtils.getUserNameFromJwtToken(token);
+        return diagramRepository.findByOwnerIdOrderByUpdatedAtDesc(ownerId)
+                .stream().map(this::mapToModel).toList();
+    }
+
+    @Override
     public void deleteDiagram(String id){
         diagramRepository.deleteById(id);
     }

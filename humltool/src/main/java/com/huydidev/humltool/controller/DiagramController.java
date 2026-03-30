@@ -12,23 +12,21 @@ import java.util.List;
 
 @RestController
 @RequestMapping("/api/diagrams")
-@CrossOrigin(origins = "http://localhost:5173") // Cho phép React (Vite) gọi API
 public class DiagramController {
 
     @Autowired
-    private DiagramService diagramService; // Inject Interface
+    private DiagramService diagramService;
 
     @PostMapping
     public ResponseEntity<DiagramModel> create(
             @RequestBody @Valid DiagramModel model,
             @RequestHeader("Authorization") String authHeader) {
-        model.setId(null); // Đảm bảo tạo mới
+        model.setId(null);
         String token = authHeader.substring(7);
         return ResponseEntity.status(HttpStatus.CREATED)
                 .body(diagramService.saveDiagram(model, token));
     }
 
-    // FE gọi khi thoát editor (đã có id)
     @PutMapping("/{id}")
     public ResponseEntity<DiagramModel> update(
             @PathVariable String id,
@@ -39,23 +37,22 @@ public class DiagramController {
         return ResponseEntity.ok(diagramService.saveDiagram(model, token));
     }
 
-    // Mở danh sách
+    // Chỉ trả về diagram của user đang đăng nhập
     @GetMapping
-    public ResponseEntity<List<DiagramModel>> getAll() {
-        return ResponseEntity.ok(diagramService.getAllDiagrams());
+    public ResponseEntity<List<DiagramModel>> getAll(
+            @RequestHeader("Authorization") String authHeader) {
+        String token = authHeader.substring(7);
+        return ResponseEntity.ok(diagramService.getMyDiagrams(token));
     }
 
-    // Mở một diagram cụ thể
     @GetMapping("/{id}")
     public ResponseEntity<DiagramModel> getById(@PathVariable String id) {
         return ResponseEntity.ok(diagramService.getDiagramById(id));
     }
 
-    // Xóa
     @DeleteMapping("/{id}")
     public ResponseEntity<Void> delete(@PathVariable String id) {
         diagramService.deleteDiagram(id);
         return ResponseEntity.noContent().build();
     }
-
 }

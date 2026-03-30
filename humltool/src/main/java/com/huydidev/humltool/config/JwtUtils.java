@@ -31,6 +31,16 @@ public class JwtUtils {
                 .signWith(key, SignatureAlgorithm.HS512)
                 .compact();
     }
+
+    public long getExpirationFromToken(String token) {
+        SecretKey key = Keys.hmacShaKeyFor(jwtSecret.getBytes(StandardCharsets.UTF_8));
+        Date expiration = Jwts.parserBuilder()
+                .setSigningKey(key).build()
+                .parseClaimsJws(token)
+                .getBody().getExpiration();
+        return expiration.getTime() - System.currentTimeMillis();
+    }
+
     public boolean validateJwtToken(String authToken) {
         try {
             SecretKey key = Keys.hmacShaKeyFor(jwtSecret.getBytes(StandardCharsets.UTF_8));

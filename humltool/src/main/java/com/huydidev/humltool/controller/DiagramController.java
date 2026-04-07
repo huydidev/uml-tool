@@ -17,6 +17,7 @@ public class DiagramController {
     @Autowired
     private DiagramService diagramService;
 
+    // ── Tạo mới ──────────────────────────────────────────────────────
     @PostMapping
     public ResponseEntity<DiagramModel> create(
             @RequestBody @Valid DiagramModel model,
@@ -27,6 +28,7 @@ public class DiagramController {
                 .body(diagramService.saveDiagram(model, token));
     }
 
+    // ── Update toàn bộ (save thủ công từ FE) ─────────────────────────
     @PutMapping("/{id}")
     public ResponseEntity<DiagramModel> update(
             @PathVariable String id,
@@ -37,7 +39,20 @@ public class DiagramController {
         return ResponseEntity.ok(diagramService.saveDiagram(model, token));
     }
 
-    // Chỉ trả về diagram của user đang đăng nhập
+    // ── Auto-save: partial update chỉ nodes + edges + updatedAt ──────
+    // FE gửi PATCH mỗi 1.5s debounce, chỉ truyền nodes và edges
+    // Không cần @Valid vì title có thể không có trong body PATCH
+    @PatchMapping("/{id}")
+    public ResponseEntity<DiagramModel> patch(
+            @PathVariable String id,
+            @RequestBody DiagramModel model,
+            @RequestHeader("Authorization") String authHeader) {
+        model.setId(id);
+        String token = authHeader.substring(7);
+        return ResponseEntity.ok(diagramService.patchDiagram(model, token));
+    }
+
+    // ── Danh sách diagram của user đang login ─────────────────────────
     @GetMapping
     public ResponseEntity<List<DiagramModel>> getAll(
             @RequestHeader("Authorization") String authHeader) {
@@ -45,11 +60,13 @@ public class DiagramController {
         return ResponseEntity.ok(diagramService.getMyDiagrams(token));
     }
 
+    // ── Lấy diagram theo id ───────────────────────────────────────────
     @GetMapping("/{id}")
     public ResponseEntity<DiagramModel> getById(@PathVariable String id) {
         return ResponseEntity.ok(diagramService.getDiagramById(id));
     }
 
+    // ── Xóa ──────────────────────────────────────────────────────────
     @DeleteMapping("/{id}")
     public ResponseEntity<Void> delete(@PathVariable String id) {
         diagramService.deleteDiagram(id);

@@ -178,7 +178,7 @@ export default function EditorCanvas({
         nodeTypes={nodeTypes}
         edgeTypes={edgeTypes}
         connectionMode={ConnectionMode.Loose}
-        edgesReconnectable={true}
+        reconnectable={true}
         fitView
         deleteKeyCode="Delete"
         proOptions={{ hideAttribution: true }}

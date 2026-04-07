@@ -7,4 +7,12 @@ export default defineConfig({
   optimizeDeps: {
     include: ['node-sql-parser'],
   },
+  server: {
+    proxy: {
+      '/api': {
+        target: 'http://localhost:8080', // port Spring Boot của bạn
+        changeOrigin: true,
+      }
+    }
+  }
 })

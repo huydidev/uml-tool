@@ -5,6 +5,10 @@ import java.util.List;
 
 public interface DiagramService {
     DiagramModel saveDiagram(DiagramModel model, String token);
+
+    // Auto-save: chỉ update nodes + edges + updatedAt, giữ nguyên title
+    DiagramModel patchDiagram(DiagramModel model, String token);
+
     List<DiagramModel> getAllDiagrams();
     List<DiagramModel> getMyDiagrams(String token);
     DiagramModel getDiagramById(String id);

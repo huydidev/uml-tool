@@ -1,4 +1,5 @@
 // src/apps/workspace/components/canvas/EditorCanvas.jsx
+// Commit 9: Thêm CollabCursors overlay + lock node indicator
 
 import { useRef, useCallback } from 'react';
 import ReactFlow, {
@@ -14,29 +15,37 @@ import 'reactflow/dist/style.css';
 import UMLClassNode from './UMLClassNode';
 import { edgeTypes } from './UMLEdges';
 import EditorToolbox from './EditorToolbox';
+import CollabCursors from './CollabCursors';
+import { useDiagramStore } from '../../../../shared/store/diagramStore';
 
+// Khai báo ngoài component — tránh React Flow warning #002
 const nodeTypes = { umlClass: UMLClassNode };
 
 function getBestHandleId(sourceNode, targetNode) {
   if (!sourceNode || !targetNode) return { sourceHandle: null, targetHandle: null };
-
   const sx = sourceNode.position.x + (sourceNode.width  ?? 180) / 2;
   const sy = sourceNode.position.y + (sourceNode.height ?? 120) / 2;
   const tx = targetNode.position.x + (targetNode.width  ?? 180) / 2;
   const ty = targetNode.position.y + (targetNode.height ?? 120) / 2;
-
   const dx = tx - sx;
   const dy = ty - sy;
-
   if (Math.abs(dx) >= Math.abs(dy)) {
     return dx > 0
-      ? { sourceHandle: 'right', targetHandle: 'left' }
+      ? { sourceHandle: 'right', targetHandle: 'left'  }
       : { sourceHandle: 'left',  targetHandle: 'right' };
   } else {
     return dy > 0
-      ? { sourceHandle: 'bottom', targetHandle: 'top' }
+      ? { sourceHandle: 'bottom', targetHandle: 'top'    }
       : { sourceHandle: 'top',    targetHandle: 'bottom' };
   }
+}
+
+function throttle(fn, ms) {
+  let last = 0;
+  return (...args) => {
+    const now = Date.now();
+    if (now - last >= ms) { last = now; fn(...args); }
+  };
 }
 
 export default function EditorCanvas({
@@ -44,27 +53,50 @@ export default function EditorCanvas({
   setNodes, setEdges,
   selectedEdgeType, onEdgeTypeChange,
   onNodeClick, onPaneClick,
-  onAddNode,
-  onDeleteNode,
-  onEdgeConnect,
-  onEdgesDelete,
-  onNodeDragStop: onNodeDragStopProp,   // ← notify EditorPage để update position cache
+  onAddNode, onDeleteNode,
+  onEdgeConnect, onEdgesDelete,
+  onNodeDragStart: onNodeDragStartProp,
+  onNodeDragStop:  onNodeDragStopProp,
+  onCursorMove,
   broadcastNodeMove, broadcastEdgeAdd,
   broadcastEdgeDelete, broadcastNodeDelete,
   viewMode, onViewModeChange,
+  currentUserId,
 }) {
   const reactFlowWrapper = useRef(null);
   const { screenToFlowPosition, getNodes } = useReactFlow();
+  const lockedNodes = useDiagramStore(s => s.lockedNodes);
+
+  const throttledCursorMove = useRef(
+    throttle((x, y) => onCursorMove?.(x, y), 50)
+  ).current;
+
+  // Inject lock style vào node data để UMLClassNode render border màu
+  const nodesWithLockStyle = nodes.map(n => {
+    const lock = lockedNodes[n.id];
+    if (!lock) return n;
+    // Chỉ đánh dấu locked nếu là user KHÁC đang giữ
+    // Nếu chính mình đang kéo thì không block drag
+    const isLockedByOther = lock.userId !== currentUserId;
+    if (!isLockedByOther) return n;
+    return {
+      ...n,
+      data: {
+        ...n.data,
+        lockedBy:      lock.userId,
+        lockedColor:   lock.color,
+        currentUserId,
+      },
+    };
+  });
 
   const onNodesChange = useCallback(
     (chs) => setNodes((nds) => applyNodeChanges(chs, nds)), [setNodes]
   );
 
-  // onEdgesChange: detect remove → gọi onEdgesDelete để sync SQL
   const onEdgesChange = useCallback((chs) => {
     const removals = chs.filter(c => c.type === 'remove');
     if (removals.length && onEdgesDelete) {
-      // Lấy edge objects trước khi apply changes
       setEdges(eds => {
         const deleted = removals.map(c => eds.find(e => e.id === c.id)).filter(Boolean);
         if (deleted.length) onEdgesDelete(deleted);
@@ -88,18 +120,11 @@ export default function EditorCanvas({
       targetHandle,
       type: selectedEdgeType,
       ...(selectedEdgeType === 'association' && {
-        markerEnd: {
-          type: MarkerType.ArrowClosed,
-          width: 16, height: 16,
-          color: '#1e293b',
-        },
+        markerEnd: { type: MarkerType.ArrowClosed, width: 16, height: 16, color: '#1e293b' },
       }),
     };
 
-    // Thêm vào ReactFlow state
     setEdges(eds => addEdge(newEdge, eds));
-
-    // Sync sang SQL editor
     onEdgeConnect?.(newEdge);
     broadcastEdgeAdd?.(newEdge);
   }, [selectedEdgeType, setEdges, onEdgeConnect, broadcastEdgeAdd, getNodes]);
@@ -122,8 +147,12 @@ export default function EditorCanvas({
     });
   }, [screenToFlowPosition, onAddNode]);
 
+  const onNodeDragStart = useCallback((event, node) => {
+    onNodeDragStartProp?.(event, node);
+  }, [onNodeDragStartProp]);
+
   const onNodeDragStop = useCallback((_, node) => {
-    onNodeDragStopProp?.(node.id, node.position);   // sync position cache
+    onNodeDragStopProp?.(node.id, node.position);
     broadcastNodeMove?.(node.id, node.position);
   }, [onNodeDragStopProp, broadcastNodeMove]);
 
@@ -153,15 +182,24 @@ export default function EditorCanvas({
   }, [onDeleteNode, broadcastNodeDelete]);
 
   const handleEdgesDelete = useCallback((deleted) => {
-    // onEdgesDelete đã được xử lý qua onEdgesChange (detect remove)
-    // Đây chỉ để broadcast nếu cần
     deleted.forEach(e => broadcastEdgeDelete?.(e.id));
   }, [broadcastEdgeDelete]);
 
+  const onMouseMove = useCallback((e) => {
+    if (!onCursorMove) return;
+    const bounds = reactFlowWrapper.current?.getBoundingClientRect();
+    if (!bounds) return;
+    throttledCursorMove(e.clientX - bounds.left, e.clientY - bounds.top);
+  }, [onCursorMove, throttledCursorMove]);
+
   return (
-    <div className="flex-1 relative" ref={reactFlowWrapper}>
+    <div
+      className="flex-1 relative"
+      ref={reactFlowWrapper}
+      onMouseMove={onMouseMove}
+    >
       <ReactFlow
-        nodes={nodes}
+        nodes={nodesWithLockStyle}
         edges={edges}
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
@@ -171,6 +209,7 @@ export default function EditorCanvas({
         onNodeClick={onNodeClick}
         onPaneClick={onPaneClick}
         onNodeDrag={onNodeDrag}
+        onNodeDragStart={onNodeDragStart}
         onNodeDragStop={onNodeDragStop}
         onEdgesDelete={handleEdgesDelete}
         onNodesDelete={handleNodesDelete}
@@ -178,13 +217,15 @@ export default function EditorCanvas({
         nodeTypes={nodeTypes}
         edgeTypes={edgeTypes}
         connectionMode={ConnectionMode.Loose}
-        reconnectable={true}
         fitView
         deleteKeyCode="Delete"
         proOptions={{ hideAttribution: true }}
       >
         <Background color="#94a3b8" gap={24} variant="dots" size={1.5} />
       </ReactFlow>
+
+      {/* Cursor của các user khác */}
+      <CollabCursors currentUserId={currentUserId} />
 
       <EditorToolbox
         selectedEdgeType={selectedEdgeType}

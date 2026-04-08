@@ -1,8 +1,9 @@
 // src/apps/workspace/components/layout/EditorHeader.jsx
-// Commit 4: Thêm nút Undo/Redo
+// Commit 9: Thêm OnlineAvatars + hiển thị đúng tên/avatar user đang login
 
 import { useState, useRef, useEffect } from 'react'
 import { THEME } from '../../../../shared/constants/theme'
+import OnlineAvatars from './OnlineAvatars'
 
 const FILE_MENU = [
   { icon: <IconImage />, label: 'Export PNG'  },
@@ -16,14 +17,23 @@ export default function EditorHeader({
   onSave, onOpenShare, isShared,
   saveStatusLabel, diagramTitle,
   onExport,
-  // Undo/Redo — commit 4
   canUndo = false,
   canRedo = false,
   onUndo,
   onRedo,
+  onOpenHistory,
+  currentUserId,
 }) {
   const [fileOpen, setFileOpen] = useState(false)
   const fileRef = useRef(null)
+
+  const userInfo = (() => {
+    try { return JSON.parse(localStorage.getItem('user')); } catch { return null; }
+  })()
+
+  const userInitial = userInfo?.name
+    ? userInfo.name.split(' ').map(w => w[0]).slice(0, 2).join('').toUpperCase()
+    : (userInfo?.email?.[0] || 'U').toUpperCase()
 
   useEffect(() => {
     if (!fileOpen) return
@@ -42,7 +52,6 @@ export default function EditorHeader({
       <div className="flex items-center gap-2 shrink-0">
         {left}
 
-        {/* Logo */}
         <h1
           className="font-black text-sm tracking-[0.18em] shrink-0"
           style={{ color: THEME.colors.PRIMARY }}
@@ -57,11 +66,9 @@ export default function EditorHeader({
           <button
             onClick={() => setFileOpen(v => !v)}
             className={`
-              flex items-center gap-1.5 text-xs font-medium
-              px-2.5 py-1.5 rounded-md
+              flex items-center gap-1.5 text-xs font-medium px-2.5 py-1.5 rounded-md
               ${THEME.bgHover} ${THEME.textSecondary}
-              border ${fileOpen ? THEME.borderAccent : 'border-transparent'}
-              transition-all
+              border ${fileOpen ? THEME.borderAccent : 'border-transparent'} transition-all
             `}
           >
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none"
@@ -80,8 +87,7 @@ export default function EditorHeader({
           {fileOpen && (
             <div className={`
               absolute left-0 top-full mt-1.5 w-44 z-50
-              ${THEME.bgPanel} border ${THEME.border}
-              rounded-xl shadow-lg overflow-hidden
+              ${THEME.bgPanel} border ${THEME.border} rounded-xl shadow-lg overflow-hidden
             `}>
               {FILE_MENU.map(({ icon, label }) => (
                 <button
@@ -103,17 +109,16 @@ export default function EditorHeader({
 
         <span className={`w-px h-4 ${THEME.resizeBarIdle} opacity-50`} />
 
-        {/* ── Undo / Redo ── */}
+        {/* Undo / Redo */}
         <div className="flex items-center gap-1">
           <button
             onClick={onUndo}
             disabled={!canUndo}
             title="Undo (Ctrl+Z)"
             className={`
-              w-7 h-7 flex items-center justify-center rounded-md
-              border transition-all text-xs
+              w-7 h-7 flex items-center justify-center rounded-md border transition-all
               ${canUndo
-                ? `${THEME.textSecondary} ${THEME.bgHover} border-transparent hover:${THEME.borderAccent}`
+                ? `${THEME.textSecondary} ${THEME.bgHover} border-transparent`
                 : `opacity-30 cursor-not-allowed border-transparent ${THEME.textSecondary}`
               }
             `}
@@ -130,10 +135,9 @@ export default function EditorHeader({
             disabled={!canRedo}
             title="Redo (Ctrl+Y)"
             className={`
-              w-7 h-7 flex items-center justify-center rounded-md
-              border transition-all text-xs
+              w-7 h-7 flex items-center justify-center rounded-md border transition-all
               ${canRedo
-                ? `${THEME.textSecondary} ${THEME.bgHover} border-transparent hover:${THEME.borderAccent}`
+                ? `${THEME.textSecondary} ${THEME.bgHover} border-transparent`
                 : `opacity-30 cursor-not-allowed border-transparent ${THEME.textSecondary}`
               }
             `}
@@ -145,6 +149,26 @@ export default function EditorHeader({
             </svg>
           </button>
         </div>
+
+        <span className={`w-px h-4 ${THEME.resizeBarIdle} opacity-50`} />
+
+        {/* History */}
+        <button
+          onClick={onOpenHistory}
+          title="Version History (Ctrl+H)"
+          className={`
+            w-7 h-7 flex items-center justify-center rounded-md
+            border border-transparent transition-all
+            ${THEME.textSecondary} ${THEME.bgHover}
+          `}
+        >
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none"
+            stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M3 3v5h5"/>
+            <path d="M3.05 13A9 9 0 1 0 6 5.3L3 8"/>
+            <path d="M12 7v5l4 2"/>
+          </svg>
+        </button>
       </div>
 
       {/* ── Giữa: title + status ── */}
@@ -161,8 +185,11 @@ export default function EditorHeader({
       </div>
 
       {/* ── Phải ── */}
-      <div className="flex items-center gap-2 shrink-0">
+      <div className="flex items-center gap-3 shrink-0">
         {right}
+
+        {/* Online avatars của user khác trong room */}
+        <OnlineAvatars currentUserId={currentUserId} />
 
         {/* Share */}
         <button
@@ -186,21 +213,23 @@ export default function EditorHeader({
           Save
         </button>
 
-        {/* Avatar */}
-        <div className={`
-          w-7 h-7 rounded-full flex items-center justify-center
-          text-xs font-bold cursor-pointer
-          border ${THEME.border} ${THEME.bgInput}
-          ${THEME.textSecondary} hover:opacity-80 transition-all
-        `}>
-          U
+        {/* Avatar user đang login */}
+        <div
+          title={userInfo?.name || userInfo?.email || 'User'}
+          className={`
+            w-7 h-7 rounded-full flex items-center justify-center
+            text-xs font-bold cursor-pointer
+            hover:opacity-80 transition-all
+          `}
+          style={{ backgroundColor: THEME.colors.PRIMARY, color: '#ffffff' }}
+        >
+          {userInitial}
         </div>
       </div>
     </div>
   )
 }
 
-// ── Icon components ───────────────────────────────────────────────────
 function IconImage() {
   return (
     <svg width="13" height="13" viewBox="0 0 24 24" fill="none"

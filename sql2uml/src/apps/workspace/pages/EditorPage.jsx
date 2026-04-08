@@ -1,17 +1,20 @@
 // src/apps/workspace/pages/EditorPage.jsx
-// Commit 4: Migrate sang Zustand store + Undo/Redo Ctrl+Z/Y
+// Commit 10: Thêm VersionHistoryPanel + ShareModal kết nối API thật
 
 import { useState, useCallback, useEffect, useRef } from 'react';
 import { ReactFlowProvider, useReactFlow } from 'reactflow';
 import { useParams, useNavigate } from 'react-router-dom';
 import { THEME } from '../../../shared/constants/theme';
 import { useDiagramStore } from '../../../shared/store/diagramStore';
-import EditorHeader  from '../components/layout/EditorHeader';
-import EditorCanvas  from '../components/canvas/EditorCanvas';
-import SidePanel     from '../components/layout/SidePanel';
-import SaveDiagramModal from '../components/modals/SaveDiagramModal';
-import ShareModal       from '../components/modals/ShareModal';
+import { useCollab } from '../hooks/useCollab';
+import EditorHeader          from '../components/layout/EditorHeader';
+import EditorCanvas          from '../components/canvas/EditorCanvas';
+import SidePanel             from '../components/layout/SidePanel';
+import SaveDiagramModal      from '../components/modals/SaveDiagramModal';
+import ShareModal            from '../components/modals/ShareModal';
+import VersionHistoryPanel   from '../components/modals/VersionHistoryPanel';
 import { nodeToSQL, genTableId } from '../../../shared/utils/Sqlparser';
+import { useExport } from '../hooks/useExport';
 
 // ── position cache ────────────────────────────────────────────────────
 const POSITIONS_KEY = 'uml_positions';
@@ -90,6 +93,14 @@ function flowEdgesToApi(edges = []) {
   }));
 }
 
+// Strip các field UI-only trước khi gửi API
+function stripUIFields(nodes = []) {
+  return nodes.map(n => {
+    const { onUpdate, lockedBy, lockedColor, currentUserId, ...rest } = n.data;
+    return { ...n, data: rest };
+  });
+}
+
 // ─────────────────────────────────────────────────────────────────────
 
 function EditorInner() {
@@ -98,7 +109,11 @@ function EditorInner() {
   const navigate = useNavigate();
   const token    = localStorage.getItem('token');
 
-  // ── Zustand selectors ────────────────────────────────────────────
+  const currentUserId = (() => {
+    try { return JSON.parse(localStorage.getItem('user'))?.email || null; } catch { return null; }
+  })();
+
+  // ── Zustand ──────────────────────────────────────────────────────
   const nodes        = useDiagramStore(s => s.nodes);
   const edges        = useDiagramStore(s => s.edges);
   const diagramId    = useDiagramStore(s => s.diagramId);
@@ -106,17 +121,25 @@ function EditorInner() {
   const isDirty      = useDiagramStore(s => s.isDirty);
   const undoStack    = useDiagramStore(s => s.undoStack);
   const redoStack    = useDiagramStore(s => s.redoStack);
+  const store        = useDiagramStore.getState;
 
-  const store = useDiagramStore.getState;   // dùng getState() trong callbacks để tránh stale
+  // ── Collab ────────────────────────────────────────────────────────
+  const { handleExport } = useExport({ nodes, edges, diagramTitle });
+
+  const { broadcastState, acquireLock, releaseLock, broadcastCursor } = useCollab({
+    diagramId: id || null,
+    enabled:   !!id,
+  });
 
   // ── Local UI state ───────────────────────────────────────────────
-  const [selectedEdgeType, setSelectedEdgeType] = useState('association');
-  const [saveModalOpen, setSaveModalOpen]       = useState(false);
-  const [shareModalOpen, setShareModalOpen]     = useState(false);
-  const [selectedNode, setSelectedNode]         = useState(null);
-  const [viewMode, setViewMode]                 = useState('class');
-  const [saveStatus, setSaveStatus]             = useState('');
-  const [loading, setLoading]                   = useState(true);
+  const [selectedEdgeType, setSelectedEdgeType]   = useState('association');
+  const [saveModalOpen, setSaveModalOpen]         = useState(false);
+  const [shareModalOpen, setShareModalOpen]       = useState(false);
+  const [historyModalOpen, setHistoryModalOpen]   = useState(false);
+  const [selectedNode, setSelectedNode]           = useState(null);
+  const [viewMode, setViewMode]                   = useState('class');
+  const [saveStatus, setSaveStatus]               = useState('');
+  const [loading, setLoading]                     = useState(true);
 
   const nodesRef         = useRef(nodes);
   const edgesRef         = useRef(edges);
@@ -129,7 +152,6 @@ function EditorInner() {
   useEffect(() => { edgesRef.current     = edges;     }, [edges]);
   useEffect(() => { diagramIdRef.current = diagramId; }, [diagramId]);
 
-  // reset store khi unmount
   useEffect(() => () => {
     clearTimeout(autoSaveTimer.current);
     store().reset();
@@ -146,6 +168,7 @@ function EditorInner() {
             headers: { Authorization: `Bearer ${token}` },
           });
           if (res.status === 401) { navigate('/auth'); return; }
+          if (res.status === 403) { navigate('/?error=forbidden'); return; }
           if (!res.ok) throw new Error();
 
           const data = await res.json();
@@ -181,7 +204,9 @@ function EditorInner() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
 
-  // ── Auto-save debounce ───────────────────────────────────────────
+  useEffect(() => () => clearTimeout(autoSaveTimer.current), []);
+
+  // ── Auto-save ────────────────────────────────────────────────────
   const scheduleAutoSave = useCallback(() => {
     clearTimeout(autoSaveTimer.current);
     autoSaveTimer.current = setTimeout(async () => {
@@ -189,15 +214,11 @@ function EditorInner() {
       if (!currentId) return;
       setSaveStatus('saving');
       try {
-        const nodesToSave = nodesRef.current.map(n => {
-          const { onUpdate, ...rest } = n.data;
-          return { ...n, data: rest };
-        });
         const res = await fetch(`/api/diagrams/${currentId}`, {
           method:  'PATCH',
           headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
           body: JSON.stringify({
-            nodes: flowNodesToApi(nodesToSave),
+            nodes: flowNodesToApi(stripUIFields(nodesRef.current)),
             edges: flowEdgesToApi(edgesRef.current),
           }),
         });
@@ -218,16 +239,12 @@ function EditorInner() {
     clearTimeout(autoSaveTimer.current);
     setSaveStatus('saving');
     try {
-      const nodesToSave = nodesRef.current.map(n => {
-        const { onUpdate, ...rest } = n.data;
-        return { ...n, data: rest };
-      });
       await fetch(`/api/diagrams/${currentId}`, {
         method:  'PATCH',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
         body: JSON.stringify({
           title,
-          nodes: flowNodesToApi(nodesToSave),
+          nodes: flowNodesToApi(stripUIFields(nodesRef.current)),
           edges: flowEdgesToApi(edgesRef.current),
         }),
       });
@@ -249,30 +266,30 @@ function EditorInner() {
     else doManualSave(diagramTitle);
   }, [diagramTitle, doManualSave]);
 
+  // ── Restore version ───────────────────────────────────────────────
+  // Server trả về diagram state tại version đó → apply lên canvas
+  const handleRestoreVersion = useCallback((restoredDiagram) => {
+    const flowNodes = apiNodesToFlow(restoredDiagram.nodes || [], viewMode);
+    const flowEdges = apiEdgesToFlow(restoredDiagram.edges || []);
+    store().pushUndo();
+    store().loadDiagram(flowNodes, flowEdges);
+    setSaveStatus('saved');
+    setTimeout(() => setSaveStatus(''), 2000);
+  }, [viewMode]);
+
   // ── Keyboard shortcuts ────────────────────────────────────────────
   useEffect(() => {
     const onKey = (e) => {
       const ctrl = e.ctrlKey || e.metaKey;
-
-      if (ctrl && e.key === 's') {
-        e.preventDefault();
-        handleSaveClick();
-        return;
-      }
-
-      // Không trigger undo/redo khi đang gõ trong input/textarea
+      if (ctrl && e.key === 's') { e.preventDefault(); handleSaveClick(); return; }
+      if (ctrl && e.key === 'h') { e.preventDefault(); setHistoryModalOpen(v => !v); return; }
       const tag = document.activeElement?.tagName;
       if (tag === 'INPUT' || tag === 'TEXTAREA') return;
-
       if (ctrl && e.key === 'z' && !e.shiftKey) {
-        e.preventDefault();
-        store().undo();
-        scheduleAutoSave();
+        e.preventDefault(); store().undo(); scheduleAutoSave();
       }
       if (ctrl && (e.key === 'y' || (e.shiftKey && e.key === 'z'))) {
-        e.preventDefault();
-        store().redo();
-        scheduleAutoSave();
+        e.preventDefault(); store().redo(); scheduleAutoSave();
       }
     };
     window.addEventListener('keydown', onKey);
@@ -318,7 +335,13 @@ function EditorInner() {
     });
 
     scheduleAutoSave();
-  }, [scheduleAutoSave]);
+    setTimeout(() => {
+      broadcastState(
+        flowNodesToApi(stripUIFields(nodesRef.current)),
+        flowEdgesToApi(edgesRef.current)
+      );
+    }, 0);
+  }, [scheduleAutoSave, broadcastState]);
 
   handleNodeUpdateRef.current = handleNodeUpdate;
 
@@ -335,7 +358,6 @@ function EditorInner() {
   const handleNodeClick = useCallback((_, node) => setSelectedNode(node), []);
   const handlePaneClick = useCallback(() => setSelectedNode(null), []);
 
-  // ── Add node — push undo ─────────────────────────────────────────
   const handleAddNode = useCallback((newNode) => {
     store().pushUndo();
     const tableId   = genTableId();
@@ -346,9 +368,12 @@ function EditorInner() {
     store().setNodes(nds => [...nds, node]);
     sqlPanelRef.current?.appendBlock(nodeToSQL(node));
     scheduleAutoSave();
-  }, [viewMode, scheduleAutoSave]);
+    setTimeout(() => broadcastState(
+      flowNodesToApi(stripUIFields([...nodesRef.current, node])),
+      flowEdgesToApi(edgesRef.current)
+    ), 0);
+  }, [viewMode, scheduleAutoSave, broadcastState]);
 
-  // ── Delete node — push undo ──────────────────────────────────────
   const handleDeleteNode = useCallback((nodeId) => {
     store().pushUndo();
     const node = nodesRef.current.find(n => n.id === nodeId);
@@ -363,18 +388,29 @@ function EditorInner() {
     store().setEdges(eds => eds.filter(e => e.source !== nodeId && e.target !== nodeId));
     setSelectedNode(prev => prev?.id === nodeId ? null : prev);
     scheduleAutoSave();
-  }, [scheduleAutoSave]);
+    setTimeout(() => broadcastState(
+      flowNodesToApi(stripUIFields(nodesRef.current.filter(n => n.id !== nodeId))),
+      flowEdgesToApi(edgesRef.current.filter(e => e.source !== nodeId && e.target !== nodeId))
+    ), 50);
+  }, [scheduleAutoSave, broadcastState]);
 
-  // ── Node drag stop — push undo ───────────────────────────────────
+  const handleNodeDragStart = useCallback((_, node) => {
+    acquireLock(node.id);
+  }, [acquireLock]);
+
   const handleNodeDragStop = useCallback((nodeId, position) => {
+    releaseLock(nodeId);
     store().pushUndo();
     positionCacheRef.current[nodeId] = position;
     savePositions(positionCacheRef.current);
     sqlPanelRef.current?.updateNodePosition(nodeId, position);
     scheduleAutoSave();
-  }, [scheduleAutoSave]);
+    setTimeout(() => broadcastState(
+      flowNodesToApi(stripUIFields(nodesRef.current)),
+      flowEdgesToApi(edgesRef.current)
+    ), 0);
+  }, [releaseLock, scheduleAutoSave, broadcastState]);
 
-  // ── Edge connect — push undo ─────────────────────────────────────
   const handleEdgeConnect = useCallback((newEdge) => {
     store().pushUndo();
     store().setEdges(eds => {
@@ -384,17 +420,23 @@ function EditorInner() {
       return updated;
     });
     scheduleAutoSave();
-  }, [scheduleAutoSave]);
+    setTimeout(() => broadcastState(
+      flowNodesToApi(stripUIFields(nodesRef.current)),
+      flowEdgesToApi([...edgesRef.current, newEdge])
+    ), 0);
+  }, [scheduleAutoSave, broadcastState]);
 
-  // ── Edges delete — push undo ─────────────────────────────────────
   const handleEdgesDelete = useCallback((deletedEdges) => {
     store().pushUndo();
     for (const edge of deletedEdges) sqlPanelRef.current?.removeRelation(edge, nodesRef.current);
     store().setEdges(eds => eds.filter(e => !deletedEdges.find(d => d.id === e.id)));
     scheduleAutoSave();
-  }, [scheduleAutoSave]);
+    setTimeout(() => broadcastState(
+      flowNodesToApi(stripUIFields(nodesRef.current)),
+      flowEdgesToApi(edgesRef.current.filter(e => !deletedEdges.find(d => d.id === e.id)))
+    ), 0);
+  }, [scheduleAutoSave, broadcastState]);
 
-  // ── SQL → Canvas (không push undo) ───────────────────────────────
   const handleSyncToCanvas = useCallback((parsedNodes, parsedEdges) => {
     if (parsedNodes.length === 0) {
       store().setNodes([]); store().setEdges([]); setSelectedNode(null);
@@ -411,7 +453,6 @@ function EditorInner() {
     scheduleAutoSave();
   }, [viewMode, scheduleAutoSave]);
 
-  // ── Badge ─────────────────────────────────────────────────────────
   const saveStatusLabel = {
     saving: { text: '⏳ Saving...',  color: THEME.textSecondary },
     saved:  { text: '✓ Saved',       color: THEME.accentSuccess  },
@@ -431,6 +472,8 @@ function EditorInner() {
       <EditorHeader
         onSave={handleSaveClick}
         onOpenShare={() => setShareModalOpen(true)}
+        onExport={handleExport}
+        onOpenHistory={() => setHistoryModalOpen(true)}
         viewMode={viewMode}
         onViewModeChange={handleViewModeChange}
         diagramTitle={diagramTitle || 'Untitled Diagram'}
@@ -440,6 +483,7 @@ function EditorInner() {
         canRedo={redoStack.length > 0}
         onUndo={() => { store().undo(); scheduleAutoSave(); }}
         onRedo={() => { store().redo(); scheduleAutoSave(); }}
+        currentUserId={currentUserId}
       />
       <div className="flex flex-1 overflow-hidden">
         <SidePanel onSyncToCanvas={handleSyncToCanvas} sqlPanelRef={sqlPanelRef} />
@@ -456,9 +500,12 @@ function EditorInner() {
           onDeleteNode={handleDeleteNode}
           onEdgeConnect={handleEdgeConnect}
           onEdgesDelete={handleEdgesDelete}
+          onNodeDragStart={handleNodeDragStart}
           onNodeDragStop={handleNodeDragStop}
+          onCursorMove={broadcastCursor}
           viewMode={viewMode}
           onViewModeChange={handleViewModeChange}
+          currentUserId={currentUserId}
         />
       </div>
 
@@ -467,11 +514,19 @@ function EditorInner() {
         onClose={() => setSaveModalOpen(false)}
         onSave={(title) => { doManualSave(title); setSaveModalOpen(false); }}
       />
+
       <ShareModal
         isOpen={shareModalOpen}
         onClose={() => setShareModalOpen(false)}
         diagramId={diagramId}
         shareLink={diagramId ? `${window.location.origin}/shared/${diagramId}` : null}
+      />
+
+      <VersionHistoryPanel
+        isOpen={historyModalOpen}
+        onClose={() => setHistoryModalOpen(false)}
+        diagramId={diagramId}
+        onRestore={handleRestoreVersion}
       />
     </div>
   );

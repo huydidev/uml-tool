@@ -12,4 +12,7 @@ public interface SharedAccessService {
     List<ShareModel> getSharedUsers(String diagramId);
 
     void revokeAccess(String diagramId, String userId);
+
+    // Lấy ownerId của diagram — dùng để check quyền revoke
+    String getOwnerId(String diagramId);
 }

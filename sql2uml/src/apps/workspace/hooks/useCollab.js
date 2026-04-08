@@ -1,177 +1,270 @@
-// src/apps/user/hooks/useCollab.js
+// src/apps/workspace/hooks/useCollab.js
+// Commit 8: Viết lại dùng @stomp/stompjs thay WebSocket plain
 
-import { useEffect, useRef, useState, useCallback } from 'react';
+import { useEffect, useRef, useCallback } from 'react';
+import { Client } from '@stomp/stompjs';
+import SockJS from 'sockjs-client';
+import { useDiagramStore } from '../../../shared/store/diagramStore';
 
-const WS_URL = 'ws://localhost:8080/ws/diagram';
+const WS_URL = 'http://localhost:8080/ws';
 
-// Màu avatar cho từng thành viên
-const MEMBER_COLORS = [
-  '#3b82f6', '#8b5cf6', '#f59e0b', '#ef4444',
-  '#10b981', '#ec4899', '#06b6d4', '#f97316',
-];
+// ── Convert API node format → ReactFlow format ────────────────────────
+// Server trả về { id, label, x, y, width, height, attributes[] }
+// ReactFlow cần  { id, type, position: {x,y}, data: {...} }
+function apiNodesToFlow(apiNodes = [], viewMode = 'class') {
+  return apiNodes.map(n => ({
+    id:       n.id,
+    type:     n.type || 'umlClass',
+    position: { x: n.x ?? 0, y: n.y ?? 0 },
+    width:    n.width,
+    height:   n.height,
+    data: {
+      label:      n.label || 'TABLE',
+      tableName:  (n.label || 'table').toLowerCase().replace(/[^a-z0-9]/g, '_'),
+      tableId:    n.id,
+      attributes: (n.attributes || []).map(a =>
+        typeof a === 'string' ? a
+          : `${a.isPK ? '+' : '-'} ${a.name}: ${(a.type || 'string').toLowerCase()}`
+      ),
+      methods:  [],
+      viewMode,
+    },
+  }));
+}
 
-export function useCollab({ roomId, nodes, edges, setNodes, setEdges }) {
-  const wsRef                         = useRef(null);
-  const [isConnected, setIsConnected] = useState(false);
-  const [members, setMembers]         = useState([]); // danh sách người trong phòng
-  const [myId]                        = useState(() => `user-${Date.now()}`);
-  const isSyncingRef                  = useRef(false); // tránh loop khi apply event từ server
+// ── Convert API edge format → ReactFlow format ────────────────────────
+function apiEdgesToFlow(apiEdges = []) {
+  return apiEdges.map(e => ({
+    id:     e.id,
+    source: e.from,
+    target: e.to,
+    type:   e.type || 'association',
+    label:  e.label || '',
+    data:   { cardinality: e.cardinality, points: e.points },
+  }));
+}
 
-  // ── Kết nối WebSocket ──────────────────────────────────────────
+export function useCollab({ diagramId, enabled = true }) {
+  const clientRef       = useRef(null);
+  const isConnectedRef  = useRef(false);
+  const heartbeatTimers = useRef({});
+  const token    = localStorage.getItem('token');
+  const userInfo = (() => {
+    try { return JSON.parse(localStorage.getItem('user')); } catch { return null; }
+  })();
+
+  const store = useDiagramStore.getState;
+
+  // ── Connect ────────────────────────────────────────────────────────
   useEffect(() => {
-    if (!roomId) return;
+    if (!enabled || !diagramId || !token) return;
 
-    const ws = new WebSocket(`${WS_URL}/${roomId}?userId=${myId}`);
-    wsRef.current = ws;
+    const client = new Client({
+      webSocketFactory: () => new SockJS(WS_URL),
+      connectHeaders: { Authorization: `Bearer ${token}` },
+      reconnectDelay: 3000,
 
-    ws.onopen = () => {
-      setIsConnected(true);
-      // Gửi join event
-      send({ type: 'JOIN', userId: myId });
-    };
+      onConnect: () => {
+        isConnectedRef.current = true;
+        useDiagramStore.setState(s => ({ ...s, isCollabConnected: true }));
 
-    ws.onmessage = (e) => {
-      try {
-        const event = JSON.parse(e.data);
-        handleIncoming(event);
-      } catch (err) {
-        console.error('WS parse error:', err);
-      }
-    };
+        // Subscribe topic chung của room
+        client.subscribe(
+          `/topic/diagram.${diagramId}`,
+          (msg) => handleMessage(JSON.parse(msg.body))
+        );
 
-    ws.onclose = () => {
-      setIsConnected(false);
-      setMembers([]);
-    };
+        // Subscribe queue riêng — nhận FULL_SYNC và LOCK_FAILED
+        client.subscribe(
+          `/user/queue/diagram.${diagramId}`,
+          (msg) => handleMessage(JSON.parse(msg.body))
+        );
 
-    ws.onerror = (err) => {
-      console.error('WS error:', err);
-      setIsConnected(false);
-    };
+        // Gửi JOIN_ROOM
+        client.publish({
+          destination: `/app/diagram.${diagramId}.join`,
+          body: JSON.stringify({
+            userName: userInfo?.name || userInfo?.email || 'Anonymous',
+          }),
+        });
+      },
+
+      onDisconnect: () => {
+        isConnectedRef.current = false;
+        useDiagramStore.setState(s => ({ ...s, isCollabConnected: false }));
+        clearAllHeartbeats();
+      },
+
+      onStompError: (frame) => {
+        console.error('STOMP error:', frame.headers?.message);
+      },
+    });
+
+    client.activate();
+    clientRef.current = client;
 
     return () => {
-      send({ type: 'LEAVE', userId: myId });
-      ws.close();
+      if (client.connected) {
+        client.publish({
+          destination: `/app/diagram.${diagramId}.leave`,
+          body: JSON.stringify({}),
+        });
+      }
+      clearAllHeartbeats();
+      client.deactivate();
+      isConnectedRef.current = false;
     };
-  }, [roomId]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [diagramId, enabled, token]);
 
-  // ── Gửi event lên server ───────────────────────────────────────
-  const send = useCallback((event) => {
-    if (wsRef.current?.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify({ ...event, userId: myId, roomId }));
-    }
-  }, [myId, roomId]);
-
-  // ── Xử lý event từ server ─────────────────────────────────────
-  const handleIncoming = useCallback((event) => {
-    // Bỏ qua event do chính mình gửi
-    if (event.userId === myId) return;
-
-    isSyncingRef.current = true;
-
+  // ── Xử lý message từ server ────────────────────────────────────────
+  const handleMessage = useCallback((event) => {
     switch (event.type) {
-      case 'MEMBERS_UPDATE':
-        setMembers(event.members.map((m, i) => ({
-          ...m,
-          color: MEMBER_COLORS[i % MEMBER_COLORS.length],
-        })));
-        break;
 
-      case 'NODE_MOVE':
-        setNodes((nds) =>
-          nds.map((n) =>
-            n.id === event.nodeId
-              ? { ...n, position: event.position }
-              : n
-          )
-        );
-        break;
+      case 'FULL_SYNC': {
+        // Convert từ API format → ReactFlow format trước khi load
+        const { nodes, edges, members, locks } = event.payload;
+        const flowNodes = apiNodesToFlow(nodes || []);
+        const flowEdges = apiEdgesToFlow(edges || []);
+        store().loadDiagram(flowNodes, flowEdges);
 
-      case 'NODE_UPDATE':
-        setNodes((nds) =>
-          nds.map((n) =>
-            n.id === event.nodeId
-              ? { ...n, data: { ...n.data, ...event.data } }
-              : n
-          )
-        );
-        break;
+        const onlineUsers = {};
+        (members || []).forEach(m => { onlineUsers[m.userId] = m; });
 
-      case 'NODE_ADD':
-        setNodes((nds) => {
-          if (nds.find((n) => n.id === event.node.id)) return nds;
-          return [...nds, event.node];
+        const lockedNodes = {};
+        Object.entries(locks || {}).forEach(([nodeId, userId]) => {
+          const member = (members || []).find(m => m.userId === userId);
+          lockedNodes[nodeId] = { userId, color: member?.color || '#3b82f6' };
+        });
+
+        useDiagramStore.setState(s => ({ ...s, onlineUsers, lockedNodes }));
+        break;
+      }
+
+      case 'STATE_UPDATE': {
+        // Convert từ API format → ReactFlow format
+        const { nodes, edges } = event.payload;
+        if (nodes) store().setNodes(apiNodesToFlow(nodes));
+        if (edges) store().setEdges(apiEdgesToFlow(edges));
+        break;
+      }
+
+      case 'USER_JOIN': {
+        const user = event.payload;
+        useDiagramStore.setState(s => ({
+          ...s,
+          onlineUsers: { ...s.onlineUsers, [user.userId]: user },
+        }));
+        break;
+      }
+
+      case 'USER_LEAVE': {
+        const { userId } = event.payload;
+        useDiagramStore.setState(s => {
+          const onlineUsers = { ...s.onlineUsers };
+          const lockedNodes = { ...s.lockedNodes };
+          delete onlineUsers[userId];
+          Object.keys(lockedNodes).forEach(nodeId => {
+            if (lockedNodes[nodeId]?.userId === userId) delete lockedNodes[nodeId];
+          });
+          return { ...s, onlineUsers, lockedNodes };
         });
         break;
+      }
 
-      case 'NODE_DELETE':
-        setNodes((nds) => nds.filter((n) => n.id !== event.nodeId));
+      case 'LOCK_ACQUIRED': {
+        const { nodeId, userId, color } = event.payload;
+        useDiagramStore.setState(s => ({
+          ...s,
+          lockedNodes: { ...s.lockedNodes, [nodeId]: { userId, color } },
+        }));
         break;
+      }
 
-      case 'EDGE_ADD':
-        setEdges((eds) => {
-          if (eds.find((e) => e.id === event.edge.id)) return eds;
-          return [...eds, event.edge];
+      case 'LOCK_RELEASED': {
+        const { nodeId } = event.payload;
+        useDiagramStore.setState(s => {
+          const lockedNodes = { ...s.lockedNodes };
+          delete lockedNodes[nodeId];
+          return { ...s, lockedNodes };
         });
         break;
+      }
 
-      case 'EDGE_DELETE':
-        setEdges((eds) => eds.filter((e) => e.id !== event.edgeId));
+      case 'LOCK_FAILED':
+        console.warn('Lock failed:', event.payload?.nodeId);
         break;
 
-      case 'FULL_SYNC':
-        // Server gửi toàn bộ state khi join phòng đã có người
-        setNodes(event.nodes || []);
-        setEdges(event.edges || []);
+      case 'CURSOR_MOVE': {
+        const { userId, x, y } = event.payload;
+        useDiagramStore.setState(s => ({
+          ...s,
+          onlineUsers: {
+            ...s.onlineUsers,
+            [userId]: { ...s.onlineUsers[userId], cursor: { x, y } },
+          },
+        }));
         break;
+      }
 
       default:
         break;
     }
+  }, [store]);
 
-    setTimeout(() => { isSyncingRef.current = false; }, 0);
-  }, [myId, setNodes, setEdges]);
+  // ── Broadcast STATE_UPDATE ─────────────────────────────────────────
+  const broadcastState = useCallback((nodes, edges) => {
+    if (!isConnectedRef.current || !clientRef.current?.connected) return;
+    clientRef.current.publish({
+      destination: `/app/diagram.${diagramId}.state`,
+      body: JSON.stringify({ nodes, edges }),
+    });
+  }, [diagramId]);
 
-  // ── Các hàm broadcast (FE gọi khi có thay đổi) ────────────────
-  const broadcastNodeMove = useCallback((nodeId, position) => {
-    if (isSyncingRef.current) return;
-    send({ type: 'NODE_MOVE', nodeId, position });
-  }, [send]);
+  // ── Acquire lock khi bắt đầu drag ────────────────────────────────
+  const acquireLock = useCallback((nodeId) => {
+    if (!isConnectedRef.current || !clientRef.current?.connected) return;
+    clientRef.current.publish({
+      destination: `/app/diagram.${diagramId}.lock.acquire`,
+      body: JSON.stringify({ nodeId }),
+    });
+    // Heartbeat mỗi 10s để giữ lock không bị TTL xóa
+    heartbeatTimers.current[nodeId] = setInterval(() => {
+      if (!isConnectedRef.current) return;
+      clientRef.current?.publish({
+        destination: `/app/diagram.${diagramId}.lock.heartbeat`,
+        body: JSON.stringify({ nodeId }),
+      });
+    }, 10_000);
+  }, [diagramId]);
 
-  const broadcastNodeUpdate = useCallback((nodeId, data) => {
-    if (isSyncingRef.current) return;
-    send({ type: 'NODE_UPDATE', nodeId, data });
-  }, [send]);
+  // ── Release lock khi thả node ─────────────────────────────────────
+  const releaseLock = useCallback((nodeId) => {
+    if (!isConnectedRef.current || !clientRef.current?.connected) return;
+    clientRef.current.publish({
+      destination: `/app/diagram.${diagramId}.lock.release`,
+      body: JSON.stringify({ nodeId }),
+    });
+    clearHeartbeat(nodeId);
+  }, [diagramId]);
 
-  const broadcastNodeAdd = useCallback((node) => {
-    if (isSyncingRef.current) return;
-    send({ type: 'NODE_ADD', node });
-  }, [send]);
+  // ── Broadcast cursor (throttle ở EditorCanvas) ───────────────────
+  const broadcastCursor = useCallback((x, y) => {
+    if (!isConnectedRef.current || !clientRef.current?.connected) return;
+    clientRef.current.publish({
+      destination: `/app/diagram.${diagramId}.cursor`,
+      body: JSON.stringify({ x, y }),
+    });
+  }, [diagramId]);
 
-  const broadcastNodeDelete = useCallback((nodeId) => {
-    if (isSyncingRef.current) return;
-    send({ type: 'NODE_DELETE', nodeId });
-  }, [send]);
-
-  const broadcastEdgeAdd = useCallback((edge) => {
-    if (isSyncingRef.current) return;
-    send({ type: 'EDGE_ADD', edge });
-  }, [send]);
-
-  const broadcastEdgeDelete = useCallback((edgeId) => {
-    if (isSyncingRef.current) return;
-    send({ type: 'EDGE_DELETE', edgeId });
-  }, [send]);
-
-  return {
-    isConnected,
-    members,
-    myId,
-    broadcastNodeMove,
-    broadcastNodeUpdate,
-    broadcastNodeAdd,
-    broadcastNodeDelete,
-    broadcastEdgeAdd,
-    broadcastEdgeDelete,
+  const clearHeartbeat = (nodeId) => {
+    clearInterval(heartbeatTimers.current[nodeId]);
+    delete heartbeatTimers.current[nodeId];
   };
+
+  const clearAllHeartbeats = () => {
+    Object.keys(heartbeatTimers.current).forEach(clearHeartbeat);
+  };
+
+  return { broadcastState, acquireLock, releaseLock, broadcastCursor };
 }

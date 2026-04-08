@@ -1,7 +1,8 @@
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
-import EditorPage from './apps/workspace/pages/EditorPage';
-import HomePage from './apps/home/pages/HomePage';
-import AuthPage from './apps/auth/pages/AuthPage';
+import EditorPage       from './apps/workspace/pages/EditorPage';
+import SharedViewerPage from './apps/workspace/pages/SharedViewerPage';
+import HomePage         from './apps/home/pages/HomePage';
+import AuthPage         from './apps/auth/pages/AuthPage';
 
 function PrivateRoute({ children }) {
   const token = localStorage.getItem('token');
@@ -9,8 +10,6 @@ function PrivateRoute({ children }) {
 }
 
 export default function App() {
-  const navigate = (path) => window.location.href = path;
-
   return (
     <Router>
       <Routes>
@@ -21,10 +20,7 @@ export default function App() {
         {/* Home */}
         <Route path="/" element={
           <PrivateRoute>
-            <HomePage
-              onOpenDiagram={(diagram) => navigate(`/editor/${diagram.id}`)}
-              onNewDiagram={() => navigate('/editor/new')}
-            />
+            <HomePage />
           </PrivateRoute>
         }/>
 
@@ -41,6 +37,9 @@ export default function App() {
             <EditorPage />
           </PrivateRoute>
         }/>
+
+        {/* Shared viewer — không cần login, read-only */}
+        <Route path="/shared/:token" element={<SharedViewerPage />} />
 
         {/* Admin */}
         <Route path="/admin" element={

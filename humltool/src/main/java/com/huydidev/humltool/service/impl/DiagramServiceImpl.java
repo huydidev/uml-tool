@@ -5,6 +5,7 @@ import com.huydidev.humltool.entity.DiagramEntity;
 import com.huydidev.humltool.exceptions.ResourceNotFoundException;
 import com.huydidev.humltool.model.DiagramModel;
 import com.huydidev.humltool.repository.DiagramRepository;
+import com.huydidev.humltool.repository.SharedAccessRepository;
 import com.huydidev.humltool.service.DiagramService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
@@ -17,10 +18,11 @@ import java.util.stream.Collectors;
 @Service
 public class DiagramServiceImpl implements DiagramService {
 
-    @Autowired private JwtUtils jwtUtils;
-    @Autowired private DiagramRepository diagramRepository;
+    @Autowired private JwtUtils               jwtUtils;
+    @Autowired private DiagramRepository      diagramRepository;
+    @Autowired private SharedAccessRepository sharedAccessRepository;
 
-    // ── Save toàn bộ (tạo mới hoặc update đầy đủ) ───────────────────
+    // ── Save toàn bộ ─────────────────────────────────────────────────
     @Override
     public DiagramModel saveDiagram(DiagramModel model, String token) {
         DiagramEntity entity = (model.getId() != null)
@@ -45,14 +47,12 @@ public class DiagramServiceImpl implements DiagramService {
         return model;
     }
 
-    // ── Patch: chỉ update nodes + edges + updatedAt ──────────────────
-    // Dùng cho auto-save — không override title, description, shareToken
+    // ── Patch: chỉ update nodes + edges ──────────────────────────────
     @Override
     public DiagramModel patchDiagram(DiagramModel model, String token) {
         DiagramEntity entity = diagramRepository.findById(model.getId())
                 .orElseThrow(() -> new ResourceNotFoundException("Không tìm thấy diagram: " + model.getId()));
 
-        // Chỉ update những field được gửi lên, giữ nguyên phần còn lại
         if (model.getNodes() != null) entity.setNodes(model.getNodes());
         if (model.getEdges() != null) entity.setEdges(model.getEdges());
         if (model.getTitle() != null && !model.getTitle().isBlank()) {
@@ -60,8 +60,49 @@ public class DiagramServiceImpl implements DiagramService {
         }
         entity.setUpdatedAt(LocalDateTime.now());
 
-        DiagramEntity saved = diagramRepository.save(entity);
-        return mapToModel(saved);
+        return mapToModel(diagramRepository.save(entity));
+    }
+
+    // ── Get không check quyền — dùng nội bộ ──────────────────────────
+    @Override
+    public DiagramModel getDiagramById(String id) {
+        return diagramRepository.findById(id)
+                .map(this::mapToModel)
+                .orElseThrow(() -> new ResourceNotFoundException("Không tìm thấy diagram: " + id));
+    }
+
+    // ── Get có check quyền — dùng khi FE mở editor ───────────────────
+    // Trả 403 nếu user không phải owner và không có trong shared_access
+    @Override
+    public DiagramModel getDiagramByIdWithAuth(String id, String token) {
+        DiagramEntity entity = diagramRepository.findById(id)
+                .orElseThrow(() -> new ResourceNotFoundException("Không tìm thấy diagram: " + id));
+
+        String requesterId = jwtUtils.getUserNameFromJwtToken(token);
+
+        // Owner luôn có quyền
+        if (entity.getOwnerId().equals(requesterId)) {
+            return mapToModel(entity);
+        }
+
+        // Check shared_access — nếu không có → 403
+        boolean hasAccess = sharedAccessRepository
+                .findByDiagramIdAndUserId(id, requesterId)
+                .isPresent();
+
+        if (!hasAccess) {
+            throw new RuntimeException("FORBIDDEN");
+        }
+
+        return mapToModel(entity);
+    }
+
+    // ── Get qua shareToken — không cần auth, read-only ────────────────
+    @Override
+    public DiagramModel getDiagramByShareToken(String shareToken) {
+        return diagramRepository.findByShareToken(shareToken)
+                .map(this::mapToModel)
+                .orElseThrow(() -> new ResourceNotFoundException("Link không hợp lệ hoặc đã hết hạn"));
     }
 
     @Override
@@ -69,13 +110,6 @@ public class DiagramServiceImpl implements DiagramService {
         return diagramRepository.findAll().stream()
                 .map(this::mapToModel)
                 .collect(Collectors.toList());
-    }
-
-    @Override
-    public DiagramModel getDiagramById(String id) {
-        return diagramRepository.findById(id)
-                .map(this::mapToModel)
-                .orElseThrow(() -> new ResourceNotFoundException("Không tìm thấy diagram: " + id));
     }
 
     @Override
@@ -90,7 +124,6 @@ public class DiagramServiceImpl implements DiagramService {
         diagramRepository.deleteById(id);
     }
 
-    // ── Helper ───────────────────────────────────────────────────────
     private DiagramModel mapToModel(DiagramEntity entity) {
         DiagramModel model = new DiagramModel();
         model.setId(entity.getId());

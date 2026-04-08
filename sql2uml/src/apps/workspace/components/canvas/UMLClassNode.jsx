@@ -1,5 +1,5 @@
 // src/apps/workspace/components/canvas/UMLClassNode.jsx
-// FIX: gọi data.onUpdate(id, newData) sau khi edit xong → EditorPage sync SQL
+// Commit 9: Hiện border màu khi node bị lock bởi user khác
 
 import { Handle, Position, useReactFlow, useStore } from 'reactflow';
 import { NodeResizer } from '@reactflow/node-resizer';
@@ -34,10 +34,10 @@ function Handles({ nodeId, visible }) {
   const usedPositions = useMemo(() => {
     const positions = new Set();
     edges.forEach((edge) => {
-      const isSource = edge.source === nodeId;
+      const isSource    = edge.source === nodeId;
       const otherNodeId = isSource ? edge.target : edge.source;
-      const selfNode = nodes.get(nodeId);
-      const otherNode = nodes.get(otherNodeId);
+      const selfNode    = nodes.get(nodeId);
+      const otherNode   = nodes.get(otherNodeId);
       if (!selfNode || !otherNode) return;
       const pos = getBestHandlePosition(
         isSource ? selfNode : otherNode,
@@ -49,8 +49,7 @@ function Handles({ nodeId, visible }) {
   }, [edges, nodes, nodeId]);
 
   const dotStyle = () => ({
-    width: 10,
-    height: 10,
+    width: 10, height: 10,
     background: THEME.colors.PRIMARY,
     border: '2px solid white',
     borderRadius: '50%',
@@ -69,24 +68,47 @@ function Handles({ nodeId, visible }) {
   );
 }
 
-// ── ERD View ───────────────────────────────────────────────────────
+// ── Lock indicator — hiện tên user đang giữ node ──────────────────────
+function LockBadge({ color, userName }) {
+  return (
+    <div style={{
+      position:        'absolute',
+      top:             -22,
+      left:            '50%',
+      transform:       'translateX(-50%)',
+      backgroundColor: color,
+      color:           '#ffffff',
+      fontSize:        9,
+      fontWeight:      700,
+      padding:         '2px 7px',
+      borderRadius:    4,
+      whiteSpace:      'nowrap',
+      zIndex:          20,
+      pointerEvents:   'none',
+      boxShadow:       '0 1px 4px rgba(0,0,0,0.2)',
+    }}>
+      🔒 {userName || 'Editing...'}
+    </div>
+  );
+}
+
+// ── ERD View ───────────────────────────────────────────────────────────
 function ERDView({ id, data, selected }) {
   const { setNodes } = useReactFlow();
   const [isEditingName, setIsEditingName] = useState(false);
   const [draftLabel, setDraftLabel]       = useState(data.label || '');
   const [hovered, setHovered]             = useState(false);
 
-  // Commit label lên cả ReactFlow state VÀ EditorPage (để sync SQL)
+  const isLocked    = !!data.lockedBy;
+  const lockColor   = data.lockedColor || '#ef4444';
+  const borderColor = isLocked ? lockColor : selected ? THEME.colors.PRIMARY : '#cbd5e1';
+
   const commitLabel = useCallback((value) => {
     const newLabel = value.trim().toUpperCase() || data.label;
     setIsEditingName(false);
-
-    // 1. Cập nhật ReactFlow node state
     setNodes((nds) => nds.map((n) =>
       n.id === id ? { ...n, data: { ...n.data, label: newLabel } } : n
     ));
-
-    // 2. Gọi onUpdate để EditorPage sync SQL
     if (typeof data.onUpdate === 'function') {
       data.onUpdate(id, {
         label:     newLabel,
@@ -99,16 +121,26 @@ function ERDView({ id, data, selected }) {
     <div
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
-      className={`bg-white border-2 shadow-md min-w-[180px] flex flex-col font-sans transition-all rounded-xl overflow-visible ${selected ? THEME.borderAccent : 'border-slate-300'}`}
+      style={{ position: 'relative' }}
+      className={`bg-white shadow-md min-w-[180px] flex flex-col font-sans transition-all rounded-xl overflow-visible`}
+      //style={{
+        //border:   `2px solid ${borderColor}`,
+        //position: 'relative',
+        // Shake animation nếu bị lock
+        //boxShadow: isLocked ? `0 0 0 3px ${lockColor}33` : undefined,
+     // }}
     >
-      <NodeResizer minWidth={160} minHeight={60} isVisible={selected}
+      {isLocked && <LockBadge color={lockColor} userName={data.lockedBy} />}
+
+      <NodeResizer minWidth={160} minHeight={60} isVisible={selected && !isLocked}
         lineClassName="border-blue-400 border-dashed"
         handleClassName="h-3 w-3 bg-white border-2 border-blue-400 rounded-sm"
       />
-      <Handles nodeId={id} visible={hovered || selected} />
+      <Handles nodeId={id} visible={(hovered || selected) && !isLocked} />
 
-      <div className={`px-3 py-2 ${THEME.bgPanel} flex justify-center items-center border-b-2 rounded-t-xl ${selected ? THEME.borderAccent : 'border-slate-300'}`}>
-        {isEditingName ? (
+      <div className={`px-3 py-2 ${THEME.bgPanel} flex justify-center items-center border-b-2 rounded-t-xl`}
+        style={{ borderColor }}>
+        {isEditingName && !isLocked ? (
           <input
             autoFocus
             className={`w-full text-center font-bold text-xs outline-none rounded px-1 ${THEME.bgInput} text-white`}
@@ -123,7 +155,7 @@ function ERDView({ id, data, selected }) {
         ) : (
           <div
             className="font-bold text-xs text-white uppercase tracking-wide cursor-text select-none"
-            onDoubleClick={() => { setDraftLabel(data.label); setIsEditingName(true); }}
+            onDoubleClick={() => !isLocked && (setDraftLabel(data.label), setIsEditingName(true))}
           >
             {data.label || 'TABLE'}
           </div>
@@ -153,27 +185,25 @@ function ERDView({ id, data, selected }) {
   );
 }
 
-// ── Class View ─────────────────────────────────────────────────────
+// ── Class View ─────────────────────────────────────────────────────────
 function ClassView({ id, data, selected }) {
   const { setNodes } = useReactFlow();
   const [isEditingName, setIsEditingName] = useState(false);
   const [draftLabel, setDraftLabel]       = useState(data.label || '');
   const [hovered, setHovered]             = useState(false);
 
-  // Commit bất kỳ field nào → cập nhật ReactFlow + gọi onUpdate để sync SQL
+  const isLocked    = !!data.lockedBy;
+  const lockColor   = data.lockedColor || '#ef4444';
+  const borderColor = isLocked ? lockColor : selected ? THEME.colors.PRIMARY : '#cbd5e1';
+
   const commitField = useCallback((field, value) => {
-    // 1. Cập nhật ReactFlow
     setNodes((nds) => nds.map((n) =>
       n.id === id ? { ...n, data: { ...n.data, [field]: value } } : n
     ));
-
-    // 2. Build payload cho onUpdate
     const payload = { [field]: value };
     if (field === 'label') {
       payload.tableName = value.toLowerCase().replace(/[^a-z0-9]/g, '_');
     }
-
-    // 3. Gọi onUpdate → EditorPage → sqlPanelRef.updateNode()
     if (typeof data.onUpdate === 'function') {
       data.onUpdate(id, payload);
     }
@@ -189,17 +219,25 @@ function ClassView({ id, data, selected }) {
     <div
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
-      className={`bg-white border-2 shadow-md min-w-[180px] flex flex-col font-sans transition-all rounded-xl overflow-visible ${selected ? THEME.borderAccent : 'border-slate-300'}`}
+      style={{
+        border:    `2px solid ${borderColor}`,
+        boxShadow: isLocked ? `0 0 0 3px ${lockColor}33` : undefined,
+        position:  'relative',
+      }}
+      className="bg-white shadow-md min-w-[180px] flex flex-col font-sans transition-all rounded-xl overflow-visible"
     >
-      <NodeResizer minWidth={180} minHeight={100} isVisible={selected}
+      {isLocked && <LockBadge color={lockColor} userName={data.lockedBy} />}
+
+      <NodeResizer minWidth={180} minHeight={100} isVisible={selected && !isLocked}
         lineClassName="border-blue-400 border-dashed"
         handleClassName="h-3 w-3 bg-white border-2 border-blue-400 rounded-sm"
       />
-      <Handles nodeId={id} visible={hovered || selected} />
+      <Handles nodeId={id} visible={(hovered || selected) && !isLocked} />
 
       {/* Class name header */}
-      <div className={`p-2 border-b-2 flex justify-center items-center min-h-[35px] bg-slate-50 rounded-t-xl ${selected ? THEME.borderAccent : 'border-slate-300'}`}>
-        {isEditingName ? (
+      <div className="p-2 border-b-2 flex justify-center items-center min-h-[35px] bg-slate-50 rounded-t-xl"
+        style={{ borderColor }}>
+        {isEditingName && !isLocked ? (
           <input
             autoFocus
             className="w-full text-center font-bold uppercase text-sm outline-none bg-blue-50 rounded"
@@ -214,33 +252,29 @@ function ClassView({ id, data, selected }) {
         ) : (
           <div
             className="font-bold uppercase text-sm cursor-text select-none text-slate-800"
-            onDoubleClick={() => { setDraftLabel(data.label); setIsEditingName(true); }}
+            onDoubleClick={() => !isLocked && (setDraftLabel(data.label), setIsEditingName(true))}
           >
             {data.label || 'NewClass'}
           </div>
         )}
       </div>
 
-      {/* Attributes textarea */}
+      {/* Attributes */}
       <div className="p-2 bg-white flex-1">
         <textarea
           placeholder="- attributes"
           className="w-full text-[12px] italic border-none outline-none resize-none leading-relaxed overflow-hidden bg-transparent"
           value={data.attributes?.join('\n') || ''}
           rows={Math.max(1, data.attributes?.length || 1)}
+          disabled={isLocked}
           onChange={(e) => {
-            // Cập nhật local ReactFlow state ngay để UI responsive
             const newAttrs = e.target.value.split('\n');
             setNodes((nds) => nds.map((n) =>
               n.id === id ? { ...n, data: { ...n.data, attributes: newAttrs } } : n
             ));
           }}
-          onBlur={(e) => {
-            // Chỉ sync SQL khi blur (tránh flood updates)
-            commitField('attributes', e.target.value.split('\n'));
-          }}
+          onBlur={(e) => { if (!isLocked) commitField('attributes', e.target.value.split('\n')); }}
           onKeyDown={(e) => {
-            // Ctrl+Enter hoặc Shift+Enter để commit sớm
             if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
               e.preventDefault();
               commitField('attributes', e.target.value.split('\n'));
@@ -250,22 +284,21 @@ function ClassView({ id, data, selected }) {
         />
       </div>
 
-      {/* Methods textarea */}
-      <div className={`p-2 border-t-2 bg-white flex-1 rounded-b-xl ${selected ? THEME.borderAccent : 'border-slate-300'}`}>
+      {/* Methods */}
+      <div className="p-2 border-t-2 bg-white flex-1 rounded-b-xl" style={{ borderColor }}>
         <textarea
           placeholder="+ methods()"
           className="w-full text-[12px] border-none outline-none resize-none leading-relaxed overflow-hidden bg-transparent"
           value={data.methods?.join('\n') || ''}
           rows={Math.max(1, data.methods?.length || 1)}
+          disabled={isLocked}
           onChange={(e) => {
             const newMethods = e.target.value.split('\n');
             setNodes((nds) => nds.map((n) =>
               n.id === id ? { ...n, data: { ...n.data, methods: newMethods } } : n
             ));
           }}
-          onBlur={(e) => {
-            commitField('methods', e.target.value.split('\n'));
-          }}
+          onBlur={(e) => { if (!isLocked) commitField('methods', e.target.value.split('\n')); }}
           onKeyDown={(e) => {
             if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
               e.preventDefault();

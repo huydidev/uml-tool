@@ -18,8 +18,8 @@ import java.util.List;
 public class SharedAccessServiceImpl implements SharedAccessService {
 
     @Autowired private SharedAccessRepository sharedAccessRepository;
-    @Autowired private DiagramRepository diagramRepository;
-    @Autowired private JwtUtils jwtUtils;
+    @Autowired private DiagramRepository      diagramRepository;
+    @Autowired private JwtUtils               jwtUtils;
 
     @Override
     public ShareModel shareDiagram(String diagramId, String ownerToken, String targetUserId, String role) {
@@ -29,14 +29,14 @@ public class SharedAccessServiceImpl implements SharedAccessService {
                 .orElseThrow(() -> new ResourceNotFoundException("Bản vẽ không tồn tại"));
 
         if (!diagram.getOwnerId().equals(ownerId)) {
-            throw new RuntimeException("Chỉ chủ sở hữu mới có quyền chia sẻ bản vẽ này!");
+            throw new RuntimeException("Chỉ chủ sở hữu mới có quyền chia sẻ!");
         }
-
         if (ownerId.equals(targetUserId)) {
             throw new RuntimeException("Bạn đã là chủ sở hữu, không cần chia sẻ cho chính mình.");
         }
 
-        SharedAccessEntity access = sharedAccessRepository.findByDiagramIdAndUserId(diagramId, targetUserId)
+        SharedAccessEntity access = sharedAccessRepository
+                .findByDiagramIdAndUserId(diagramId, targetUserId)
                 .orElse(new SharedAccessEntity());
 
         access.setDiagramId(diagramId);
@@ -44,33 +44,37 @@ public class SharedAccessServiceImpl implements SharedAccessService {
         access.setRole(role);
         access.setGrantedAt(LocalDateTime.now());
 
-        SharedAccessEntity savedEntity = sharedAccessRepository.save(access);
+        SharedAccessEntity saved = sharedAccessRepository.save(access);
 
-        ShareModel response = new ShareModel();
-        response.setUserId(savedEntity.getUserId());
-        response.setRole(savedEntity.getRole());
-        response.setGrantedAt(savedEntity.getGrantedAt().toString());
-
-        return response;
+        return ShareModel.builder()
+                .userId(saved.getUserId())
+                .role(saved.getRole())
+                .grantedAt(saved.getGrantedAt().toString())
+                .build();
     }
 
     @Override
     public List<ShareModel> getSharedUsers(String diagramId) {
-        List<SharedAccessEntity> entities = sharedAccessRepository.findByDiagramId(diagramId);
-
-        return entities.stream().map(entity -> {
-            ShareModel model = new ShareModel();
-            model.setUserId(entity.getUserId());
-            model.setRole(entity.getRole());
-            model.setGrantedAt(entity.getGrantedAt().toString());
-            return model;
-        }).toList();
+        return sharedAccessRepository.findByDiagramId(diagramId)
+                .stream()
+                .map(e -> ShareModel.builder()
+                        .userId(e.getUserId())
+                        .role(e.getRole())
+                        .grantedAt(e.getGrantedAt().toString())
+                        .build())
+                .toList();
     }
 
     @Override
     public void revokeAccess(String diagramId, String userId) {
-        // Tìm và xóa quyền truy cập
         sharedAccessRepository.deleteByDiagramIdAndUserId(diagramId, userId);
+    }
+
+    @Override
+    public String getOwnerId(String diagramId) {
+        return diagramRepository.findById(diagramId)
+                .map(DiagramEntity::getOwnerId)
+                .orElseThrow(() -> new ResourceNotFoundException("Diagram không tồn tại"));
     }
 
     @Override
@@ -80,8 +84,9 @@ public class SharedAccessServiceImpl implements SharedAccessService {
 
         if (diagram.getOwnerId().equals(userId)) return;
 
-        SharedAccessEntity access = sharedAccessRepository.findByDiagramIdAndUserId(diagramId, userId)
-                .orElseThrow(() -> new RuntimeException("Bạn không có quyền truy cập bản vẽ này!"));
+        SharedAccessEntity access = sharedAccessRepository
+                .findByDiagramIdAndUserId(diagramId, userId)
+                .orElseThrow(() -> new RuntimeException("Bạn không có quyền truy cập!"));
 
         if ("EDITOR".equals(requiredRole) && "VIEWER".equals(access.getRole())) {
             throw new RuntimeException("Bạn chỉ có quyền xem, không được sửa!");

@@ -2,6 +2,7 @@ package com.huydidev.humltool.controller;
 
 import com.huydidev.humltool.model.DiagramModel;
 import com.huydidev.humltool.service.DiagramService;
+import com.huydidev.humltool.service.WorkspaceMemberService;
 import jakarta.validation.Valid;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
@@ -16,6 +17,7 @@ import java.util.Map;
 public class DiagramController {
 
     @Autowired private DiagramService diagramService;
+    @Autowired private WorkspaceMemberService memberService;
 
     @PostMapping
     public ResponseEntity<DiagramModel> create(
@@ -78,5 +80,29 @@ public class DiagramController {
     public ResponseEntity<Void> delete(@PathVariable String id) {
         diagramService.deleteDiagram(id);
         return ResponseEntity.noContent().build();
+    }
+
+    // src/main/java/com/huydidev/humltool/controller/DiagramController.java
+// Thêm 1 endpoint mới — các endpoint cũ giữ nguyên
+
+    // POST /api/workspaces/{workspaceId}/diagrams — tạo diagram trong workspace
+    @PostMapping("/workspaces/{workspaceId}/diagrams")
+    public ResponseEntity<?> createInWorkspace(
+            @PathVariable String workspaceId,
+            @RequestBody @Valid DiagramModel model,
+            @RequestHeader("Authorization") String authHeader) {
+        try {
+            model.setId(null);
+            return ResponseEntity.status(HttpStatus.CREATED)
+                    .body(diagramService.saveDiagramInWorkspace(
+                            model, workspaceId, authHeader.substring(7)));
+        } catch (RuntimeException e) {
+            if ("FORBIDDEN".equals(e.getMessage())) {
+                return ResponseEntity.status(HttpStatus.FORBIDDEN)
+                        .body(Map.of("message",
+                                "Bạn không có quyền tạo diagram trong workspace này"));
+            }
+            throw e;
+        }
     }
 }

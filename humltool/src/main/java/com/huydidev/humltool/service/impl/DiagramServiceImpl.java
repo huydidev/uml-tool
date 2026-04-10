@@ -6,6 +6,8 @@ import com.huydidev.humltool.exceptions.ResourceNotFoundException;
 import com.huydidev.humltool.model.DiagramModel;
 import com.huydidev.humltool.repository.DiagramRepository;
 import com.huydidev.humltool.repository.SharedAccessRepository;
+import com.huydidev.humltool.repository.WorkspaceMemberRepository;
+import com.huydidev.humltool.repository.WorkspaceRepository;
 import com.huydidev.humltool.service.DiagramService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
@@ -21,6 +23,9 @@ public class DiagramServiceImpl implements DiagramService {
     @Autowired private JwtUtils               jwtUtils;
     @Autowired private DiagramRepository      diagramRepository;
     @Autowired private SharedAccessRepository sharedAccessRepository;
+    // DiagramServiceImpl.java — thêm 2 field
+    @Autowired private WorkspaceRepository workspaceRepository;
+    @Autowired private WorkspaceMemberRepository memberRepository;
 
     // ── Save toàn bộ ─────────────────────────────────────────────────
     @Override
@@ -51,7 +56,32 @@ public class DiagramServiceImpl implements DiagramService {
     @Override
     public DiagramModel patchDiagram(DiagramModel model, String token) {
         DiagramEntity entity = diagramRepository.findById(model.getId())
-                .orElseThrow(() -> new ResourceNotFoundException("Không tìm thấy diagram: " + model.getId()));
+                .orElseThrow(() -> new ResourceNotFoundException(
+                        "Không tìm thấy diagram: " + model.getId()));
+
+        String userId = jwtUtils.getUserNameFromJwtToken(token);
+
+        // ── Check workspace deadline ──────────────────────────────────
+        if (entity.getWorkspaceId() != null) {
+            workspaceRepository.findById(entity.getWorkspaceId())
+                    .ifPresent(ws -> {
+                        if (ws.getDeadline() != null
+                                && LocalDateTime.now().isAfter(ws.getDeadline())) {
+
+                            // Teacher/Owner vẫn được sửa
+                            boolean isTeacher = memberRepository
+                                    .findByWorkspaceIdAndUserId(
+                                            ws.getId(), userId)
+                                    .map(m -> "OWNER".equals(m.getRole())
+                                            || "TEACHER".equals(m.getRole()))
+                                    .orElse(false);
+
+                            if (!isTeacher) {
+                                throw new RuntimeException("DEADLINE_PASSED");
+                            }
+                        }
+                    });
+        }
 
         if (model.getNodes() != null) entity.setNodes(model.getNodes());
         if (model.getEdges() != null) entity.setEdges(model.getEdges());
@@ -112,11 +142,58 @@ public class DiagramServiceImpl implements DiagramService {
                 .collect(Collectors.toList());
     }
 
+// src/main/java/com/huydidev/humltool/service/impl/DiagramServiceImpl.java
+// Chỉ sửa method getMyDiagrams — các method khác giữ nguyên
+
+    // ── Thay thế method cũ ───────────────────────────────────────────
     @Override
     public List<DiagramModel> getMyDiagrams(String token) {
         String ownerId = jwtUtils.getUserNameFromJwtToken(token);
-        return diagramRepository.findByOwnerIdOrderByUpdatedAtDesc(ownerId)
-                .stream().map(this::mapToModel).toList();
+
+        // Chỉ trả personal diagrams (workspaceId = null)
+        // Workspace diagrams được lấy qua WorkspaceController
+        return diagramRepository
+                .findByOwnerIdAndWorkspaceIdIsNullOrderByUpdatedAtDesc(ownerId)
+                .stream()
+                .map(this::mapToModel)
+                .toList();
+    }
+
+    // ── Thêm method mới — tạo diagram trong workspace ────────────────
+    @Override
+    public DiagramModel saveDiagramInWorkspace(
+            DiagramModel model, String workspaceId, String token) {
+
+        String userId = jwtUtils.getUserNameFromJwtToken(token);
+
+        DiagramEntity entity = (model.getId() != null)
+                ? diagramRepository.findById(model.getId())
+                .orElse(new DiagramEntity())
+                : new DiagramEntity();
+
+        entity.setTitle(model.getTitle());
+        entity.setDescription(model.getDescription());
+        entity.setNodes(model.getNodes());
+        entity.setEdges(model.getEdges());
+        entity.setOwnerId(userId);
+        entity.setWorkspaceId(workspaceId);
+
+        // CLASSROOM diagram mặc định private
+        entity.setPrivate(true);
+
+        entity.setUpdatedAt(LocalDateTime.now());
+
+        if (entity.getId() == null) {
+            entity.setShareToken(
+                    UUID.randomUUID().toString().substring(0, 8));
+        }
+
+        DiagramEntity saved = diagramRepository.save(entity);
+        model.setId(saved.getId());
+        model.setShareToken(saved.getShareToken());
+        model.setOwnerId(saved.getOwnerId());
+        model.setWorkspaceId(saved.getWorkspaceId());
+        return model;
     }
 
     @Override
@@ -136,4 +213,6 @@ public class DiagramServiceImpl implements DiagramService {
         model.setEdges(entity.getEdges());
         return model;
     }
+
+
 }

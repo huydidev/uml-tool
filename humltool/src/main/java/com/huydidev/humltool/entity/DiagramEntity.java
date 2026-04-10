@@ -1,3 +1,6 @@
+// src/main/java/com/huydidev/humltool/entity/DiagramEntity.java
+// Thêm 2 fields: workspaceId + isPrivate
+
 package com.huydidev.humltool.entity;
 
 import lombok.Data;
@@ -13,19 +16,31 @@ import java.util.Map;
 public class DiagramEntity {
     @Id
     private String id;
+
     @Indexed
     private String ownerId;
 
+    // null = personal diagram
+    // có giá trị = thuộc workspace
+    @Indexed
+    private String workspaceId;
+
+    // CLASSROOM: true = chỉ owner + teacher thấy
+    // TEAM: false = tất cả member thấy
+    private boolean isPrivate = false;
+
     private String title;
     private String description;
-    private  boolean isPublic = false;
+    private boolean isPublic = false;
+
     @Indexed(unique = true, sparse = true)
     private String shareToken;
+
     private List<NodeData> nodes;
     private List<EdgeData> edges;
 
     @Data
-    public static class NodeData{
+    public static class NodeData {
         private String id;
         private String type;
         private String label;
@@ -34,7 +49,7 @@ public class DiagramEntity {
     }
 
     @Data
-    public static class EdgeData{
+    public static class EdgeData {
         private String id;
         private String from;
         private String to;

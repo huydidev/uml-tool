@@ -276,4 +276,22 @@ public class DiagramRoomController {
         if (val instanceof Number n) return n.doubleValue();
         return 0.0;
     }
+
+    @MessageMapping("/diagram.{diagramId}.comment")
+    public void handleComment(
+            @DestinationVariable String diagramId,
+            @Payload Map<String, Object> payload,
+            Principal principal
+    ) {
+        String userId = principal.getName();
+
+        broadcastToRoomIncludingSelf(diagramId,
+                WsEvent.builder()
+                        .type("COMMENT_ADD")
+                        .diagramId(diagramId)
+                        .userId(userId)
+                        .payload(payload)
+                        .build()
+        );
+    }
 }

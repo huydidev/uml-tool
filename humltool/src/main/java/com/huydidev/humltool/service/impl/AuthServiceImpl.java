@@ -18,40 +18,41 @@ import java.time.LocalDateTime;
 
 @Service
 public class AuthServiceImpl implements AuthService {
-    @Autowired private UserRepository userRepository;
-    @Autowired private PasswordEncoder passwordEncoder;
-    @Autowired private JwtUtils jwtUtils;
+
+    @Autowired private UserRepository      userRepository;
+    @Autowired private PasswordEncoder     passwordEncoder;
+    @Autowired private JwtUtils            jwtUtils;
     @Autowired private StringRedisTemplate redisTemplate;
 
     @Override
-    public UserResponse register(RegisterRequest request){
-        if(userRepository.existsByEmail(request.getEmail())){
+    public UserResponse register(RegisterRequest request) {
+        if (userRepository.existsByEmail(request.getEmail())) {
             throw new RuntimeException("Email đã được sử dụng!");
         }
 
         UserEntity user = new UserEntity();
         user.setEmail(request.getEmail());
-
-//       lấy đầu mail nếu name trống
-        user.setName(request.getName()!= null ? request.getName():request.getEmail().split("@")[0]);
+        user.setName(request.getName() != null
+                ? request.getName()
+                : request.getEmail().split("@")[0]);
         user.setPasswordHash(passwordEncoder.encode(request.getPassword()));
         user.setCreatedAt(LocalDateTime.now());
 
         UserEntity saved = userRepository.save(user);
-        return new UserResponse(saved.getId(), saved.getEmail(), saved.getName());
+        return toResponse(saved);
     }
 
     @Override
-    public JwtResponse login(LoginRequest request){
+    public JwtResponse login(LoginRequest request) {
         UserEntity user = userRepository.findByEmail(request.getEmail())
                 .orElseThrow(() -> new RuntimeException("Email không tồn tại"));
 
-        if (!passwordEncoder.matches(request.getPassword(), user.getPasswordHash())){
+        if (!passwordEncoder.matches(request.getPassword(), user.getPasswordHash())) {
             throw new RuntimeException("Mật khẩu không chính xác");
         }
 
         String token = jwtUtils.generateToken(user);
-        return new JwtResponse(token, new UserResponse(user.getId(), user.getEmail(), user.getName()));
+        return new JwtResponse(token, toResponse(user));
     }
 
     @Override
@@ -61,5 +62,16 @@ public class AuthServiceImpl implements AuthService {
             redisTemplate.opsForValue().set(
                     "blacklist:" + token, "revoked", Duration.ofMillis(ttl));
         }
+    }
+
+    // ── Helper: trả về UserResponse kèm roles ────────────────────────
+    // FE dùng roles để check isAdmin và hiện/ẩn Admin Dashboard link
+    private UserResponse toResponse(UserEntity user) {
+        return new UserResponse(
+                user.getId(),
+                user.getEmail(),
+                user.getName(),
+                user.getRoles()
+        );
     }
 }

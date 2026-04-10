@@ -120,8 +120,15 @@ export function useCollab({ diagramId, enabled = true }) {
   // ── Xử lý message từ server ────────────────────────────────────────
   const handleMessage = useCallback((event) => {
     switch (event.type) {
+      // useCollab.js — thêm vào handleMessage
+      case "COMMENT_ADD": {
+        const comment = event.payload;
+        // Gọi callback từ useComments
+        if (onNewComment) onNewComment(comment);
+        break;
+      }
 
-      case 'FULL_SYNC': {
+      case "FULL_SYNC": {
         // Convert từ API format → ReactFlow format trước khi load
         const { nodes, edges, members, locks } = event.payload;
         const flowNodes = apiNodesToFlow(nodes || []);
@@ -129,19 +136,21 @@ export function useCollab({ diagramId, enabled = true }) {
         store().loadDiagram(flowNodes, flowEdges);
 
         const onlineUsers = {};
-        (members || []).forEach(m => { onlineUsers[m.userId] = m; });
+        (members || []).forEach((m) => {
+          onlineUsers[m.userId] = m;
+        });
 
         const lockedNodes = {};
         Object.entries(locks || {}).forEach(([nodeId, userId]) => {
-          const member = (members || []).find(m => m.userId === userId);
-          lockedNodes[nodeId] = { userId, color: member?.color || '#3b82f6' };
+          const member = (members || []).find((m) => m.userId === userId);
+          lockedNodes[nodeId] = { userId, color: member?.color || "#3b82f6" };
         });
 
-        useDiagramStore.setState(s => ({ ...s, onlineUsers, lockedNodes }));
+        useDiagramStore.setState((s) => ({ ...s, onlineUsers, lockedNodes }));
         break;
       }
 
-      case 'STATE_UPDATE': {
+      case "STATE_UPDATE": {
         // Convert từ API format → ReactFlow format
         const { nodes, edges } = event.payload;
         if (nodes) store().setNodes(apiNodesToFlow(nodes));
@@ -149,41 +158,42 @@ export function useCollab({ diagramId, enabled = true }) {
         break;
       }
 
-      case 'USER_JOIN': {
+      case "USER_JOIN": {
         const user = event.payload;
-        useDiagramStore.setState(s => ({
+        useDiagramStore.setState((s) => ({
           ...s,
           onlineUsers: { ...s.onlineUsers, [user.userId]: user },
         }));
         break;
       }
 
-      case 'USER_LEAVE': {
+      case "USER_LEAVE": {
         const { userId } = event.payload;
-        useDiagramStore.setState(s => {
+        useDiagramStore.setState((s) => {
           const onlineUsers = { ...s.onlineUsers };
           const lockedNodes = { ...s.lockedNodes };
           delete onlineUsers[userId];
-          Object.keys(lockedNodes).forEach(nodeId => {
-            if (lockedNodes[nodeId]?.userId === userId) delete lockedNodes[nodeId];
+          Object.keys(lockedNodes).forEach((nodeId) => {
+            if (lockedNodes[nodeId]?.userId === userId)
+              delete lockedNodes[nodeId];
           });
           return { ...s, onlineUsers, lockedNodes };
         });
         break;
       }
 
-      case 'LOCK_ACQUIRED': {
+      case "LOCK_ACQUIRED": {
         const { nodeId, userId, color } = event.payload;
-        useDiagramStore.setState(s => ({
+        useDiagramStore.setState((s) => ({
           ...s,
           lockedNodes: { ...s.lockedNodes, [nodeId]: { userId, color } },
         }));
         break;
       }
 
-      case 'LOCK_RELEASED': {
+      case "LOCK_RELEASED": {
         const { nodeId } = event.payload;
-        useDiagramStore.setState(s => {
+        useDiagramStore.setState((s) => {
           const lockedNodes = { ...s.lockedNodes };
           delete lockedNodes[nodeId];
           return { ...s, lockedNodes };
@@ -191,13 +201,13 @@ export function useCollab({ diagramId, enabled = true }) {
         break;
       }
 
-      case 'LOCK_FAILED':
-        console.warn('Lock failed:', event.payload?.nodeId);
+      case "LOCK_FAILED":
+        console.warn("Lock failed:", event.payload?.nodeId);
         break;
 
-      case 'CURSOR_MOVE': {
+      case "CURSOR_MOVE": {
         const { userId, x, y } = event.payload;
-        useDiagramStore.setState(s => ({
+        useDiagramStore.setState((s) => ({
           ...s,
           onlineUsers: {
             ...s.onlineUsers,
